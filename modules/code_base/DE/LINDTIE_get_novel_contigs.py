@@ -52,43 +52,43 @@ def get_ref_txs(ref_tx_fasta):
     handle.close()
     return ref_txs
 
-def get_novel_transcripts(tcm, ref_txs, outdir):
+def process_transcripts(tcm, ref_txs, outdir):
     '''
     Process transcript count matrix to identify novel transcripts
-    and prepare output table
+    and prepare output table.
     '''
     print('Processing transcript count matrix...')
     
-    # Create a copy of the transcript count matrix
-    novel_tx = tcm.copy()
+    # Create working copy
+    full_tx_table = tcm.copy()
+    
+    # Identify the sample column (assuming it's the one that isn't 'transcript_id')
+    sample_columns = [col for col in tcm.columns if col != 'transcript_id']
+    if sample_columns:
+        case_sample = sample_columns[0]
+        # Rename the sample column to 'num_read_case'
+        full_tx_table = full_tx_table.rename(columns={case_sample: 'num_read_case'})
     
     # Identify novel transcripts (not in reference)
-    novel_tx['is_novel'] = ~novel_tx['transcript_id'].isin(ref_txs)
-    
-    # Filter to only novel transcripts
-    print('Filtering for novel transcripts...')
-    novel_tx = novel_tx[novel_tx['is_novel']]
-    
-    if len(novel_tx) == 0:
-        print('Warning: No novel transcripts found!')
-        # Create empty dataframe with expected columns
-        novel_tx = pd.DataFrame(columns=['contig', 'case_reads'])
-    else:
-        # Get the first sample column (assuming it's the case sample)
-        sample_columns = [col for col in tcm.columns if col != 'transcript_id']
-        case_sample = sample_columns[0]  # Use first sample as case
-        
-        # Prepare output table
-        novel_tx = novel_tx[['transcript_id', case_sample]].copy()
-        novel_tx = novel_tx.rename(columns={'transcript_id': 'contig', case_sample: 'case_reads'})
-    
-    # Write full transcript table (including reference transcripts)
-    print('Writing full transcript table...')
-    full_tx_table = tcm.copy()
     full_tx_table['is_novel'] = ~full_tx_table['transcript_id'].isin(ref_txs)
-    full_tx_table.to_csv('%s/transcript_table.txt' % outdir, sep='\t', index=False)
+
+    # Filter to keep ONLY novel transcripts (excludes known references)
+    print('Filtering for novel transcripts...')
+    full_tx_table = full_tx_table[full_tx_table['is_novel']]
+
+    if len(full_tx_table) == 0:
+        print('Warning: No novel transcripts found!')
+
+    # Add dummy DE columns so LINDTIE_post_process.py does not crash.
+    # use logFC=10 and FDR=0 to ensure these are treated as "significant" downstream.
+    full_tx_table['logFC'] = 10.0
+    full_tx_table['FDR'] = 0.0
+    full_tx_table['PValue'] = 0.0
+    full_tx_table['logCPM'] = 1.0
     
-    return novel_tx
+    # Write the main significant transcript file
+    print(f'Writing output to {outdir}/DE_transcript_significant.txt...')
+    full_tx_table.to_csv('%s/DE_transcript_significant.txt' % outdir, sep='\t', index=False)
 
 def main():
     args = parse_args(sys.argv[1:])
@@ -101,12 +101,9 @@ def main():
         print("{} ERROR: {}, exiting".format("get_novel_contigs", message), file=sys.stderr)
         sys.exit(1)
 
-    # get novel transcripts table
+    # Process and write transcripts
     outdir = os.path.dirname(args.tcm_file)
-    novel_tx = get_novel_transcripts(tcm, ref_txs, outdir)
+    process_transcripts(tcm, ref_txs, outdir)
     
-    # write dummy DE file
-    novel_tx.to_csv('%s/transcript_de.txt' % outdir, sep = '\t', index = False)
-
 if __name__ == '__main__':
     main()

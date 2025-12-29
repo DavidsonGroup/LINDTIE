@@ -52,7 +52,10 @@ process build_transcript_matrix {
       - conda-forge:r-jsonlite=2.0.0 
       - conda-forge:r-readr=2.1.5 
       - conda-forge::r-arrow=19.0.1
-      - conda-forge::pandas=2.3.0 (added for Python script)
+      - bioconda::bio=1.8.0 (for Python script)
+      - conda-forge::pandas=2.3.0 (for Python script)
+      - conda-forge::numpy=2.3.0 (for Python script)
+
 */
 process compare_transcript_oarfish {
 
@@ -61,10 +64,10 @@ process compare_transcript_oarfish {
 
     publishDir "${sample_id}_output/03-DifferentialExpression", mode: 'copy'
 
-    container 'oras://community.wave.seqera.io/library/bioconductor-edger_r-arrow_r-data.table_r-dplyr_pruned:5cb8cbf534468a05'
+    container 'oras://community.wave.seqera.io/library/bio_bioconductor-edger_numpy_pandas_pruned:a36eb08f5f4b4b2c'
 
     input:
-      tuple val(sample_id), path(case_quant), path(control_quants), path(case_meta), path(control_metas), path(case_parquet), path(control_parquets), path(trans_fasta), path(transcript_matrix)
+      tuple val(sample_id), path(case_quant), path(control_quants), path(case_meta), path(control_metas), path(case_parquet), path(control_parquets), path(trans_fasta), path(transcript_matrix), path(novel_fasta)
     
     output:
       tuple val(sample_id), path("DE.log"), emit: de_log, optional: true
@@ -75,8 +78,7 @@ process compare_transcript_oarfish {
       tuple val(sample_id), path("DE_QLDisp_plot.png"), emit: ql_disp_plot, optional: true
 
     script:
-    // Use proper boolean check - defaults to true if RUN_DE is not set
-    if (params.RUN_DE ?: true) {
+    if (params.RUN_DE) {
       """
       # Create oarfish_output directory structure
       mkdir -p oarfish_output
@@ -116,13 +118,15 @@ process compare_transcript_oarfish {
       """
     } else {
       // This block runs when params.RUN_DE is false
-      """
-      echo "Running novel contig detection instead of differential expression analysis"
+      """    
+      echo "Running novel contig detection (Single Sample Mode)"
       
+      # Use the 'novel_fasta' input here
       python ${params.code_base}/DE/LINDTIE_get_novel_contigs.py \\
-        ${transcript_matrix} ${trans_fasta} \\
-        > DE_transcript_significant.txt
-      
+        ./${transcript_matrix} \\
+        ${trans_fasta} \\
+        ${novel_fasta}
+              
       # Create empty files for optional outputs that won't be generated
       touch DE.log
       touch DE_transcript_full_results.txt

@@ -231,7 +231,7 @@ process de_novo_assembly {
     - Concatenates the reference transcriptome with the assembled transcripts.
 */
 process merge_refTrans_assembly {
-		
+    
     tag "${sample_id}"
     label 'process_short'
 
@@ -240,10 +240,17 @@ process merge_refTrans_assembly {
       path trans_fasta
 
     output:
-      tuple val(sample_id), path("merged_refTrans_assembly.fa"), emit: merged_ref
+      // Ref + Novel
+      tuple val(sample_id), path("merged_refTrans_assembly.fa"), emit: merged_ref, optional: true
+      // Novel Assemblies Only (Combined)
+      tuple val(sample_id), path("novel_assemblies_only.fa"), emit: novel_only, optional: true
 
     script:
     """
-    cat ${trans_fasta} ${assemblies} > merged_refTrans_assembly.fa
+    # 1. Concatenate all novel assemblies (handles Hybrid, Denovo, or Ref-Guided)
+    cat ${assemblies} > novel_assemblies_only.fa
+
+    # 2. Create the full merged reference
+    cat ${trans_fasta} novel_assemblies_only.fa > merged_refTrans_assembly.fa
     """
 }
