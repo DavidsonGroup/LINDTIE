@@ -1648,7 +1648,7 @@
                             </div>
                             <div class="quick-start-step-content">
                                 <div class="quick-start-step-title">Get References</div>
-                                <div class="quick-start-step-desc"><a href="https://zenodo.org/records/17823608" target="_blank">Zenodo</a> (1.1GB)</div>
+                                <div class="quick-start-step-desc"><a href="https://zenodo.org/records/18294960" target="_blank">Zenodo</a> (1.2GB)</div>
                             </div>
                         </div>
                         <div class="quick-start-step">
@@ -1905,16 +1905,16 @@ withLabel: 'process_long' {
             <section class="section" id="references">
                 <h1>Setting Up References</h1>
 
-                <p>Download the compressed pre-built reference package from <a href="https://zenodo.org/records/17823608" target="_blank">Zenodo</a> (1.1GB):</p>
+                <p>Download the compressed pre-built reference package from <a href="https://zenodo.org/records/18294960" target="_blank">Zenodo</a> (1.2GB):</p>
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-                    <pre><code>curl -O https://zenodo.org/records/17823608/files/LINDTIE_ref.tar.gz
+                    <pre><code>curl -O https://zenodo.org/records/18294960/files/LINDTIE_ref.tar.gz
 
 # decompress the tar.gz file and remove the tar.gz file                        
 tar xzf LINDTIE_ref.tar.gz && rm LINDTIE_ref.tar.gz</code></pre>
                 </div>
 
-                <p>This will generate a <code>ref</code> directory containing the seven required reference files. Ensure that the <code>ref</code> directory is placed inside the <code>LINDTIE</code> base directory:</p>
+                <p>This will generate a <code>ref</code> directory containing the nine required reference files. Ensure that the <code>ref</code> directory is placed inside the <code>LINDTIE</code> base directory:</p>
 
                 <div class="code-block">
                     <button class="copy-btn" onclick="copyCode(this)">Copy</button>
@@ -1923,6 +1923,8 @@ tar xzf LINDTIE_ref.tar.gz && rm LINDTIE_ref.tar.gz</code></pre>
     ├── chess3.0.fa
     ├── chess3.0.gtf
     ├── chess3.0.info
+    ├── Cosmic_CancerGeneCensus_v103_GRCh38_tier.tsv
+    ├── gencode.v49.primary_assembly.annotation.gtf
     ├── hg38.fa
     ├── hg38.fa.fai
     ├── hg38_splice_junctions.bed
@@ -2240,7 +2242,7 @@ nextflow run $LINDTIE_dir/main.nf -params-file $LINDTIE_dir/params.yaml -profile
                         </div>
                     
                         <pre class="language-yaml"><code class="language-yaml"># Default parameters for the workflow
-# Assembly Mode: 'hybrid', 'denovo', or 'ref_guided'
+# Assembly Mode: 'hybrid', 'denovo_subset', 'denovo', or 'ref_guided'
 assembly_mode: 'hybrid'
 
 ######################## Tool Presets ########################
@@ -2257,6 +2259,7 @@ rnabloom2_preset: ''
 minimap2_preset: 'map-ont'
 
 ######################## Filtering & Thresholds ########################
+subset_count: null          # NULL for no subsetting, otherwise the number of reads to subset to
 RUN_DE: true                # true or false (default: true)
 fdr: 0.05                   # default 0.05
 min_cpm: 0.5                # default 0.5
@@ -2268,6 +2271,7 @@ splice_motif_mismatch: 1    # default 1
 oarfish_num_bootstraps: 10  # default 10
 gene_filter: NULL           # default NULL (e.g. "TP53,BRCA2")
 var_filter: NULL            # default NULL (e.g. "DEL,INS")
+single_sample_min_vaf: 0.1  # default 0.1
                             </code></pre>
                     </div>
                 </div>
@@ -2520,41 +2524,61 @@ var_filter: NULL            # default NULL (e.g. "DEL,INS")
                         </tr>
                         <tr>
                             <td>32</td>
+                            <td>COSMIC_tier</td>
+                            <td>The Cancer Gene Census assessment for the genes involved. Tier 1 denotes genes with documented activity relevant to cancer; Tier 2 denotes genes with strong evidence of a role in cancer but less extensive documentation.</td>
+                        </tr>
+                        <tr>
+                            <td>33</td>
+                            <td>site1_feature</td>
+                            <td>The genomic feature annotation at the exact position of end 1 (e.g., CDS, UTR, intron, intergenic).</td>
+                        </tr>
+                        <tr>
+                            <td>34</td>
+                            <td>site2_feature</td>
+                            <td>The genomic feature annotation at the exact position of end 2 (e.g., CDS, UTR, intron, intergenic).</td>
+                        </tr>
+                        <tr>
+                            <td>35</td>
+                            <td>is_coding</td>
+                            <td>Indicates whether the variant involves coding regions. This is determined by evaluating whether site1_feature and site2_feature are annotated as coding sequences (i.e., CDS).</td>
+                        </tr>
+                        <tr>
+                            <td>36</td>
                             <td>contig_id</td>
                             <td>Contig name from the de novo assembly.</td>
                         </tr>
                         <tr>
-                            <td>33</td>
+                            <td>37</td>
                             <td>unique_contig_ID</td>
                             <td>ID of the modified SuperTranscript used in visualization outputs.</td>
                         </tr>
                         <tr>
-                            <td>34</td>
+                            <td>38</td>
                             <td>contig_len</td>
                             <td>Length of the contig sequence.</td>
                         </tr>
                         <tr>
-                            <td>35</td>
+                            <td>39</td>
                             <td>contig_cigar</td>
                             <td>CIGAR string representing the contig's genome alignment (may contain two strings if soft/hard-clipped).</td>
                         </tr>
                         <tr>
-                            <td>36</td>
+                            <td>40</td>
                             <td>seq_loc1</td>
                             <td>Location string for the first sequence region (e.g., contig123:100–140).</td>
                         </tr>
                         <tr>
-                            <td>37</td>
+                            <td>41</td>
                             <td>seq_loc2</td>
                             <td>Location string for the second sequence region, if applicable.</td>
                         </tr>
                         <tr>
-                            <td>38</td>
+                            <td>42</td>
                             <td>seq1</td>
                             <td>20 bp sequence around the main variant site.</td>
                         </tr>
                         <tr>
-                            <td>39</td>
+                            <td>43</td>
                             <td>seq2</td>
                             <td>20 bp sequence around the second variant site (if applicable).</td>
                         </tr>
@@ -2628,10 +2652,13 @@ var_filter: NULL            # default NULL (e.g. "DEL,INS")
                 <pre><code>&lt;caseName&gt;_output/
 ├── run_parameters.log
 ├── 01-Assembly
-│   ├── rnabloom.transcripts.fa (assembly_mode = hybrid or denovo)
-│   ├── stringtie2_assembly.fa (assembly_mode = hybrid or ref_guided)
-│   ├── stringtie2_assembly.gtf (assembly_mode = hybrid or ref_guided)
-│   └── read_counts_summary.log (assembly_mode = hybrid)
+│   ├── denovo_read_counts.log (assembly_mode = hybrid or denovo or denovo_subset)
+│   ├── rnabloom.transcripts.fa (assembly_mode = hybrid or denovo or denovo_subset)
+│   ├── read_counts_summary.log (assembly_mode = hybrid or ref_guided or denovo_subset)
+│   ├── confident_mapped.bam (assembly_mode = hybrid or ref_guided or denovo_subset)
+│   ├── reads_all_sorted.bam (assembly_mode = hybrid or ref_guided or denovo_subset)
+│   ├── stringtie2_assembly.fa (assembly_mode = hybrid or ref_guided or denovo_subset)
+│   └── stringtie2_assembly.gtf (assembly_mode = hybrid or ref_guided or denovo_subset)
 ├── 02-Quantification
 │   ├── cases
 │   │   ├── &lt;caseName&gt;.infreps.pq
@@ -2664,10 +2691,14 @@ var_filter: NULL            # default NULL (e.g. "DEL,INS")
 
             <h3>01-Assembly</h3>
             <ul>
-                <li><strong><code>rnabloom.transcripts.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by RNA-Bloom2. Only present when assembly_mode = hybrid or denovo.</li>
-                <li><strong><code>stringtie2_assembly.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided.</li>
-                <li><strong><code>stringtie2_assembly.gtf</code></strong>: A GTF file that contains the assembled transcript annotations produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided.</li>
-                <li><strong><code>read_counts_summary.log</code></strong>: A log file that contains the read counts summary. Only present when assembly_mode = hybrid.</li>
+                <li><strong><code>denovo_read_counts.log</code></strong>: A log file that contains the read counts for the de novo assembly. Only present when assembly_mode = denovo or denovo_subset.</li>
+                <li><strong><code>rnabloom.transcripts.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by RNA-Bloom2. Only present when assembly_mode = hybrid or denovo or denovo_subset.</li>
+                <li><strong><code>read_counts_summary.log</code></strong>: A log file that contains the read counts summary. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>confident_mapped.bam</code></strong>: A BAM file that contains the confident mapped reads. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>reads_all_sorted.bam</code></strong>: A BAM file that contains all the reads mapped to the reference genome. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>stringtie2_assembly.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>stringtie2_assembly.gtf</code></strong>: A GTF file that contains the assembled transcript annotations produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>read_counts_summary.log</code></strong>: A log file that contains the read counts summary. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
             </ul>
 
             <h3>02-Quantification</h3>
