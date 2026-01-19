@@ -197,7 +197,7 @@ process post_process {
     container 'oras://community.wave.seqera.io/library/bio_pybedtools_pysam_intervaltree_pruned:b44948a3d69b5ec0'
 
     input:
-      tuple val(sample_id), path(refined_annotated_contigs_info), path(refined_annotated_contigs_fasta), path(transcript_de), path(vaf_estimates)
+      tuple val(sample_id), path(refined_annotated_contigs_info), path(refined_annotated_contigs_fasta), path(transcript_de), path(vaf_estimates), path(cosmic_tier_data)
 
     output:
 		  tuple val(sample_id), path("${sample_id}_results.tsv"), emit: results, optional: true
@@ -217,6 +217,9 @@ process post_process {
       --minGap ${params.min_gap} \
       ${ params.gene_filter ? "--gene_filter ${params.gene_filter}" : "" } \
       ${ params.var_filter ? "--var_filter ${params.var_filter}" : "" } \
+      --cosmic_tier_data ${params.cosmic_tier_data} \
+      --run_de ${params.RUN_DE} \
+      --single_sample_min_vaf ${params.single_sample_min_vaf} \
       --log final_post_process.log \
       --all_variants_out ${sample_id}_all_variants_ranked_results.tsv \
       --discard_out ${sample_id}_discarded_results.tsv \
