@@ -19,11 +19,13 @@ params.ann_info = null
 params.tx_annotation = null
 params.tx2gene = null
 params.gencode_annotation = null
+params.cosmic_tier_data = null
 
 // Defaults
 params.assembly_mode = 'hybrid'     // 'hybrid', 'denovo', or 'ref_guided'
 params.minimap2_preset = 'map-ont'  // 'map-ont', 'map-pb', 'map-hifi', 'lr:hq'
 params.rnabloom2_preset = ''        // '', '-lrpb'
+params.subset_count = null          // NULL for no subsetting, otherwise the number of reads to subset to
 params.RUN_DE = true                // true or false
 params.fdr = 0.05
 params.min_cpm = 0.5
@@ -35,6 +37,7 @@ params.splice_motif_mismatch = 1
 params.oarfish_num_bootstraps = 10
 params.gene_filter = null
 params.var_filter = null
+params.single_sample_min_vaf = 0.1
 params.help = false
 params.version = false
 
@@ -71,6 +74,7 @@ Optional parameters:
 --gencode_annotation        : Path to GENCODE GTF for reference-guided assembly.
 --gene_filter               : List of genes to filter (default: NULL)
 --var_filter                : List of variant types to filter (default: NULL)
+--single_sample_min_vaf     : Minimum VAF to keep a variant when RUN_DE is false (default: 0.1)
 --help                      : Show this help message
 --version                   : Show the version of LINDTIE
     """
@@ -98,21 +102,22 @@ log.info "======================================================================
 
 include { decompress_case_reads } from './modules/decompress'
 include { decompress_control_reads } from './modules/decompress'
-include { align_raw_reads_to_hg38 } from './modules/assembly'
-include { ref_guided_assembly } from './modules/assembly'
-include { de_novo_assembly } from './modules/assembly'
-include { merge_refTrans_assembly } from './modules/assembly'
+include { align_raw_reads_to_hg38 } from './modules/assembly_new'
+include { ref_guided_assembly } from './modules/assembly_new'
+include { subset_reads } from './modules/assembly_new'
+include { de_novo_assembly } from './modules/assembly_new'
+include { merge_refTrans_assembly } from './modules/assembly_new'
 include { case_align_quant } from './modules/quantification'
 include { control_align_quant } from './modules/quantification'
 include { build_transcript_matrix } from './modules/differentialExpression'
 include { compare_transcript_oarfish } from './modules/differentialExpression'
 include { filter_de_contigs } from './modules/differentialExpression'
 include { align_contigs_to_genome } from './modules/differentialExpression'
-include { annotate_contigs } from './modules/annotation'
-include { refine_annotation } from './modules/annotation'
-include { filter_refined_annotated_contigs_fasta } from './modules/annotation'
-include { estimate_vaf } from './modules/annotation'
-include { post_process } from './modules/annotation'
+include { annotate_contigs } from './modules/annotation_new'
+include { refine_annotation } from './modules/annotation_new'
+include { filter_refined_annotated_contigs_fasta } from './modules/annotation_new'
+include { estimate_vaf } from './modules/annotation_new'
+include { post_process } from './modules/annotation_new'
 
 /*************************** LOCAL PROCESSES **************************/
 process save_params {
@@ -133,6 +138,7 @@ process save_params {
 Sample ID             : ${sample_id}
 Timestamp             : ${new Date().format('yyyy-MM-dd HH:mm:ss')}
 assembly_mode         : ${params.assembly_mode}
+subset_count          : ${params.subset_count}
 RUN_DE                : ${params.RUN_DE}
 minimap2_preset       : ${params.minimap2_preset}
 rnabloom2_preset      : ${params.rnabloom2_preset}
@@ -146,6 +152,7 @@ splice_motif_mismatch : ${params.splice_motif_mismatch}
 oarfish_num_bootstraps: ${params.oarfish_num_bootstraps}
 gene_filter           : ${params.gene_filter}
 var_filter            : ${params.var_filter}
+single_sample_min_vaf : ${params.single_sample_min_vaf}
 EOF
     """
 }
@@ -209,43 +216,91 @@ workflow {
         ch_decompressed_control_reads = decompress_control_reads(ch_control_reads)
     }
 
-    // =========================================================================
+// =========================================================================
     // ASSEMBLY STRATEGY
     // =========================================================================
     
+    // Initialize Channels
     ch_stringtie_assembly = Channel.empty()
     ch_rnabloom_assembly  = Channel.empty()
     
-    // --- Strategy 1: Genome Alignment Required (Hybrid OR Ref-Guided) ---
-    if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'ref_guided') {
+    ch_reads_for_alignment = Channel.empty()
+    ch_reads_for_denovo    = Channel.empty()
+
+    // -------------------------------------------------------
+    // 1. Route Reads Based on Mode
+    // -------------------------------------------------------
+    
+    if (params.assembly_mode == 'denovo_subset') {
+        // --- SPLIT MODE (denovo_subset) ---
+        // 1. Split the reads using BBMap
+        ch_split_result = subset_reads(ch_decompressed_case_reads, params.subset_count)
+        
+        // 2. Subset goes DIRECTLY to De Novo
+        ch_reads_for_denovo = ch_split_result.subset_fastq
+        
+        // 3. Remainder goes to Alignment
+        ch_reads_for_alignment = ch_split_result.remainder_fastq
+
+    } else if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'ref_guided') {
+        // --- STANDARD ALIGNMENT MODES ---
+        // Full reads go to alignment
+        ch_reads_for_alignment = ch_decompressed_case_reads
+    
+    } else if (params.assembly_mode == 'denovo') {
+        // --- PURE DE NOVO ---
+        // Full reads go to de novo
+        ch_reads_for_denovo = ch_decompressed_case_reads
+    }
+
+    // -------------------------------------------------------
+    // 2. Run Alignment (If needed)
+    // -------------------------------------------------------
+    
+    ch_aligned_bam_for_stringtie = Channel.empty()
+    
+    // Logic: Alignment runs for everything EXCEPT pure denovo
+    if (params.assembly_mode != 'denovo') { 
         
         ch_aligned = align_raw_reads_to_hg38(
-            ch_decompressed_case_reads, 
+            ch_reads_for_alignment, 
             Channel.fromPath(params.hg38_fasta)
         )
-        
-        def ch_bam_for_stringtie = (params.assembly_mode == 'ref_guided') 
-                                    ? ch_aligned.all_mapped_bam 
-                                    : ch_aligned.confident_mapped_bam 
 
+        // Determine which BAM goes to StringTie
+        // denovo_subset treated like ref_guided (keep all)
+        if (params.assembly_mode == 'ref_guided' || params.assembly_mode == 'denovo_subset') {
+            ch_aligned_bam_for_stringtie = ch_aligned.all_mapped_bam
+        } else {
+            // hybrid
+            ch_aligned_bam_for_stringtie = ch_aligned.confident_mapped_bam
+        }
+
+        // IF HYBRID: Rescued reads also go to De Novo
+        if (params.assembly_mode == 'hybrid') {
+             ch_reads_for_denovo = ch_aligned.rescued_fastq
+        }
+    }
+
+    // -------------------------------------------------------
+    // 3. Run Assemblies
+    // -------------------------------------------------------
+
+    // A. Reference Guided Assembly (StringTie2)
+    if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'ref_guided' || params.assembly_mode == 'denovo_subset') {
+        
         ch_ref_guided_assembled = ref_guided_assembly(
-            ch_bam_for_stringtie,
+            ch_aligned_bam_for_stringtie,
             Channel.fromPath(params.gencode_annotation),
             Channel.fromPath(params.hg38_fasta)
         )
-        
         ch_stringtie_assembly = ch_ref_guided_assembled.stringtie2_assembled_fa
     }
 
-    // --- Strategy 2: De Novo Assembly (Hybrid OR De Novo) ---
-    if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'denovo') {
+    // B. De Novo Assembly (RNABloom2)
+    if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'denovo' || params.assembly_mode == 'denovo_subset') {
         
-        def ch_reads_for_bloom = (params.assembly_mode == 'hybrid')
-                                 ? ch_aligned.rescued_fastq
-                                 : ch_decompressed_case_reads
-
-        ch_de_novo_assembled = de_novo_assembly(ch_reads_for_bloom)
-        
+        ch_de_novo_assembled = de_novo_assembly(ch_reads_for_denovo)
         ch_rnabloom_assembly = ch_de_novo_assembled.rnabloom_assembled_fa
     }
 
@@ -399,5 +454,6 @@ workflow {
             .join(ch_refined_annotated_contigs_fasta.refined_annotated_contigs_fasta, by: 0)
             .join(ch_de_result.de_results, by: 0)
             .join(ch_vaf.vaf_estimates, by: 0)
+            .combine(Channel.fromPath(params.cosmic_tier_data))
     )
 }
