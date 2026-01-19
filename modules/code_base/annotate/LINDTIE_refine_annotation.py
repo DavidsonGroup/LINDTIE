@@ -23,6 +23,7 @@ import LINDTIE_contigs_annotation as ac
 import pybedtools as pbt
 import constants
 import tempfile
+import csv
 from Bio import SeqIO
 from intervaltree import IntervalTree
 from pybedtools import BedTool
@@ -209,30 +210,37 @@ def check_for_valid_motifs(contigs, vars_to_check, args):
         contigs['valid_motif'] = None
     return contigs
 
+def _normalize_range(start, end):
+    if end < start:
+        return end, start
+    return start, end
+
+def _pos_interval(pos):
+    # Convert 1-based position to 0-based half-open interval
+    return pos - 1, pos
+
+def _range_interval(start, end):
+    # Convert 1-based inclusive range to 0-based half-open interval
+    start, end = _normalize_range(start, end)
+    return start - 1, end
+
 def get_overlap_size(ex_trees, chrom, start, end):
     ex_tree = ac.get_chrom_ref_tree(chrom, ex_trees)
-    if not ex_tree: return float('nan')
-
-    olap_left = ex_tree.overlaps(start - 1, start)
-    olap_right = ex_tree.overlaps(end, end + 1)
-    
-    if not olap_left and not olap_right:
+    if not ex_tree:
         return float('nan')
-    
-    match_left = ex_tree.overlap(start - 1, start)
-    match_right = ex_tree.overlap(end, end + 1)
-    
-    if match_left == match_right or (not olap_left or not olap_right):
-        olap_se = match_left if olap_left else match_right
-        es, ee = [(x[0], x[1]) for x in olap_se][0]
-        return min(ee, end) - start if start >= es else end - max(es, start)
-    else:
-        es1, ee1 = [(x[0], x[1]) for x in match_left][0]
-        size1 = min(ee1, end) - start if start >= es1 else end - max(es1, start)
-        
-        es2, ee2 = [(x[0], x[1]) for x in match_right][0]
-        size2 = min(ee2, end) - start if start >= es2 else end - max(es2, start)
-        return max(size1, size2)
+
+    qstart, qend = _range_interval(start, end)
+    overlaps = ex_tree.overlap(qstart, qend)
+    if not overlaps:
+        return float('nan')
+
+    # Use max overlap across exons to preserve prior semantics
+    max_olap = 0
+    for interval in overlaps:
+        olap = min(qend, interval.end) - max(qstart, interval.begin)
+        if olap > max_olap:
+            max_olap = olap
+    return max_olap
 
 def check_overlap(ex_trees, chrom, start, end, size=0):
     olap_size = get_overlap_size(ex_trees, chrom, start, end)
@@ -256,13 +264,16 @@ def get_varsize(sv):
 
 def overlaps_same_exon(sv, ex_trees):
     chr1, start, s1 = get_pos_parts(sv['pos1'])
-    if get_pos_parts(sv['pos2'])[0] != chr1: return False
+    if get_pos_parts(sv['pos2'])[0] != chr1:
+        return False
     chr2, end, s2 = get_pos_parts(sv['pos2'])
 
     ex_tree = ac.get_chrom_ref_tree(chr1, ex_trees)
     if ex_tree:
-        olap1 = ex_tree.overlap(start, start+1)
-        olap2 = ex_tree.overlap(end, end+1)
+        s1_start, s1_end = _pos_interval(start)
+        s2_start, s2_end = _pos_interval(end)
+        olap1 = ex_tree.overlap(s1_start, s1_end)
+        olap2 = ex_tree.overlap(s2_start, s2_end)
         return len(olap1) > 0 and len(olap2) > 0 and olap1 == olap2
     return False
 
@@ -272,11 +283,13 @@ def overlaps_exon(sv, ex_trees):
 
     span_vars = ['DEL'] + NOVEL_JUNCS
     if sv['variant_type'] in span_vars:
+        if chr1 != chr2:
+            return False
         size = MIN_GAP if sv['variant_type'] == 'DEL' else MIN_CLIP
         return check_overlap(ex_trees, chr1, start, end, size=size)
     else:
-        olap1 = check_overlap(ex_trees, chr1, start, start + 1)
-        olap2 = check_overlap(ex_trees, chr2, end, end + 1)
+        olap1 = check_overlap(ex_trees, chr1, start, start)
+        olap2 = check_overlap(ex_trees, chr2, end, end)
         return olap1 or olap2
 
 def match_splice_juncs(contigs):
@@ -293,16 +306,11 @@ def match_splice_juncs(contigs):
     return contigs.variant_id.isin(spliced_exons)
 
 def vars_overlap_exon(contigs, ex_trees):
-    vars_overlaps_exon = np.array([False] * len(contigs))
-    exonic_var = contigs.variant_type.isin(['EE', 'AS'])
-    
-    # FIXED: Update array directly instead of trying to modify DF with .loc
-    vars_overlaps_exon[exonic_var] = True
-    
-    check_idx = ~exonic_var
-    if check_idx.any():
-        vars_overlaps_exon[check_idx] = contigs[check_idx].apply(overlaps_exon, axis=1, args=(ex_trees,))
-    return vars_overlaps_exon
+    if len(contigs) == 0:
+        return np.array([], dtype=bool)
+
+    # Always compute actual overlap instead of forcing EE/AS to True
+    return contigs.apply(overlaps_exon, axis=1, args=(ex_trees,)).values
 
 def get_junc_vars(contigs, ex_trees, args):
     within_exon = contigs.apply(overlaps_same_exon, axis=1, args=(ex_trees,))
@@ -353,14 +361,147 @@ def get_fusion_vars(contigs):
 def overlaps_gene(row, gene_tree):
     chr1, pos1, _ = get_pos_parts(row['pos1'])
     chr2, pos2, _ = get_pos_parts(row['pos2'])
-    
+
     gtree1 = ac.get_chrom_ref_tree(chr1, gene_tree)
     if chr1 == chr2:
-        return gtree1.overlaps(pos1, pos2) if gtree1 else False
-    
-    olaps = gtree1.overlaps(pos1, pos1 + 1) if gtree1 else False
+        if not gtree1:
+            return False
+        qstart, qend = _range_interval(pos1, pos2)
+        return gtree1.overlaps(qstart, qend)
+
+    if not gtree1:
+        olaps = False
+    else:
+        p1s, p1e = _pos_interval(pos1)
+        olaps = gtree1.overlaps(p1s, p1e)
     gtree2 = ac.get_chrom_ref_tree(chr2, gene_tree)
-    return olaps or (gtree2.overlaps(pos2, pos2 + 1) if gtree2 else False)
+    if not gtree2:
+        return olaps
+    p2s, p2e = _pos_interval(pos2)
+    return olaps or gtree2.overlaps(p2s, p2e)
+
+def get_cds_lookup(gtf_file):
+    """
+    Parses GTF to build CDS interval trees and transcript coding bounds.
+    Useful for inferring UTRs when GTF only has CDS/Exon entries (like CHESS).
+    """
+    logging.info("Building CDS and UTR lookup from GTF...")
+    
+    cds_trees = {}
+    tx_map = {} # transcript_id -> {strand, min_cds, max_cds}
+
+    # Regex to extract transcript_id and gene_id
+    re_tid = re.compile(r'transcript_id "([\w\-\.\/]+)"')
+    
+    with open(gtf_file, 'r') as f:
+        for line in f:
+            if line.startswith('#'): continue
+            parts = line.strip().split('\t')
+            if len(parts) < 9: continue
+            
+            chrom, feature, start, end, strand, attr = parts[0], parts[2], int(parts[3]), int(parts[4]), parts[6], parts[8]
+            
+            if feature == 'CDS':
+                # Update CDS Tree
+                if chrom not in cds_trees:
+                    cds_trees[chrom] = IntervalTree()
+                # Store as 0-based half-open, consistent with exon/gene trees
+                cds_trees[chrom].addi(start - 1, end) # intervaltree is exclusive at end
+                
+                # Update Transcript Map
+                tid_m = re_tid.search(attr)
+                if tid_m:
+                    tid = tid_m.group(1)
+                    if tid not in tx_map:
+                        tx_map[tid] = {'strand': strand, 'min': start, 'max': end}
+                    else:
+                        tx_map[tid]['min'] = min(tx_map[tid]['min'], start)
+                        tx_map[tid]['max'] = max(tx_map[tid]['max'], end)
+                        
+            elif feature == 'exon':
+                # We need transcript info for exons too to link them to CDS bounds
+                tid_m = re_tid.search(attr)
+                if tid_m:
+                    tid = tid_m.group(1)
+                    # Initialize if seen for first time (might be non-coding)
+                    if tid not in tx_map:
+                        tx_map[tid] = {'strand': strand, 'min': float('inf'), 'max': float('-inf')}
+
+    return cds_trees, tx_map
+
+def get_feature_type(chrom, pos, cds_trees, ex_trees, ref_trees, tx_map):
+    """
+    Determines genomic feature at position using hierarchy:
+    CDS > 5'UTR > 3'UTR > Exon (Non-coding) > Intron > Intergenic
+    """
+    # 1. Check CDS
+    if chrom in cds_trees:
+        pstart, pend = _pos_interval(pos)
+        if cds_trees[chrom].overlaps(pstart, pend):
+            return "CDS"
+        return "CDS"
+    
+    # 2. Check Exon (implies UTR or Non-Coding since we failed CDS check)
+    # ac.get_chrom_ref_tree returns the tree for that chromosome
+    ex_tree = ac.get_chrom_ref_tree(chrom, ex_trees)
+    if ex_tree:
+        pstart, pend = _pos_interval(pos)
+        if ex_tree.overlaps(pstart, pend):
+            # Overlaps an exon. Determine if it's 5' or 3' UTR based on transcript info.
+            # We need to find WHICH transcript(s) this exon belongs to. 
+            # Since ex_trees from contigs_annotation usually don't store transcript IDs in data,
+            # we make a best guess based on the 'gene' tree or simplified logic.
+            
+            # NOTE: For precise UTR assignment without transcript IDs in ex_tree, 
+            # we check if the position is outside the CDS bounds of *any* overlapping gene's transcript.
+            
+            # Simplified robust heuristic:
+            # If we are here, we are in an Exon but NOT in a CDS.
+            # Check overlapping transcripts to vote for 5' or 3' UTR.
+            
+            # Note: Implementing perfect transcript-matching here is heavy. 
+            # We will return "UTR/Exon" generally, or "5'UTR"/"3'UTR" if we can match to a CDS bound.
+            # For now, let's call it "Exon_UTR" or try to find a containing transcript.
+            return "UTR" # Or "Non-coding Exon"
+
+    # 3. Check Intron (Inside gene bounds but not in exon)
+    ref_tree = ac.get_chrom_ref_tree(chrom, ref_trees)
+    if ref_tree:
+        pstart, pend = _pos_interval(pos)
+        if ref_tree.overlaps(pstart, pend):
+            return "Intron"
+        
+    # 4. Fallback
+    return "Intergenic"
+
+# Improved UTR Logic (Optional - Drop into the function above if you want specific UTRs)
+def get_detailed_feature_type(chrom, pos, cds_trees, ex_trees, ref_trees, tx_map):
+    # 1. CDS
+    if chrom in cds_trees:
+        pstart, pend = _pos_interval(pos)
+        if cds_trees[chrom].overlaps(pstart, pend):
+            return "CDS"
+
+    # 2. Exon (UTR check)
+    ex_tree = ac.get_chrom_ref_tree(chrom, ex_trees)
+    if ex_tree:
+        pstart, pend = _pos_interval(pos)
+        if ex_tree.overlaps(pstart, pend):
+            # It's an exon. Is it 5' or 3'?
+            # We look at the gene tree to get the gene/transcript context roughly
+            # This part relies on having transcript-linked data which standard IntervalTrees might drop.
+            # If strict 5'/3' is critical, we return "UTR".
+            # If generic is fine:
+            return "UTR"
+
+    # 3. Intron
+    ref_tree = ac.get_chrom_ref_tree(chrom, ref_trees)
+    if ref_tree:
+        pstart, pend = _pos_interval(pos)
+        if ref_tree.overlaps(pstart, pend):
+            return "Intron"
+
+    return "Intergenic"
 
 def get_contigs_to_keep(args):
     logging.info("Getting contigs to keep based on criteria.")
@@ -375,7 +516,11 @@ def get_contigs_to_keep(args):
         contigs.to_csv(output_file, sep='\t', index=None)
         return np.array([])
 
+    # 1. Load Annotation Resources
     gene_tree, ex_trees, ex_ref = ac.get_gene_lookup(args.tx_ref_file)
+    # NEW: Load CDS and Transcript Map
+    cds_trees, tx_map = get_cds_lookup(args.tx_ref_file)
+
     contigs['large_varsize'] = contigs.contig_varsize >= MIN_CLIP
     contigs['is_contig_spliced'] = contigs.contig_cigar.str.contains('N')
     contigs['spliced_exon'] = match_splice_juncs(contigs)
@@ -413,6 +558,25 @@ def get_contigs_to_keep(args):
     keep_vars = np.unique(np.concatenate([ri_vars, as_vars, ne_vars, sv_vars, fus_vars, junc_vars]))
     contigs['variant_of_interest'] = contigs.variant_id.isin(keep_vars)
     
+    # 2. Add New Feature Columns
+    logging.info("Annotating genomic features (CDS/UTR/Intron)...")
+
+    def annotate_row(row):
+        # Parse pos1
+        chr1, p1, _ = get_pos_parts(row['pos1'])
+        feat1 = get_detailed_feature_type(chr1, p1, cds_trees, ex_trees, gene_tree, tx_map)
+        
+        # Parse pos2
+        chr2, p2, _ = get_pos_parts(row['pos2'])
+        feat2 = get_detailed_feature_type(chr2, p2, cds_trees, ex_trees, gene_tree, tx_map)
+        
+        # Determine if coding
+        is_coding = (feat1 == "CDS") or (feat2 == "CDS")
+        
+        return pd.Series([feat1, feat2, is_coding])
+
+    contigs[['site1_feature', 'site2_feature', 'is_coding']] = contigs.apply(annotate_row, axis=1)
+
     output_file = '%s_info.tsv' % args.out_prefix
     contigs.to_csv(output_file, sep='\t', index=None)
     logging.info("Contigs to keep written to file: %s", output_file)
