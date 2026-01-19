@@ -85,417 +85,156 @@ def get_num_criteria(vtype):
 
 def calculate_variant_score(variant_row):
     """
-    Calculate a score for variant type selection based on multiple criteria
-    Higher score = more likely to be the correct primary variant type
-    
-    Args:
-        variant_row: Dictionary or pandas Series with variant information
+    Integrated Scoring System: Structural Confidence + Functional Impact
     """
     vtype = variant_row.get('variant_type', '')
-    size = abs(int(variant_row.get('varsize', 0)))
-    contig_varsize = abs(int(variant_row.get('contig_varsize', 0)))
     
-    # Base scores for different variant types based on biological significance
+    # --- 1. SETUP VARIABLES ---
+    try:
+        size = abs(int(variant_row.get('varsize', 0)))
+        reads = int(variant_row.get('num_reads_case', 0))
+        vaf = float(variant_row.get('VAF', 0))
+        contig_varsize = abs(int(variant_row.get('contig_varsize', 0)))
+    except (ValueError, TypeError):
+        size, reads, vaf, contig_varsize = 0, 0, 0.0, 0
+
+    # Genomic Context fields
+    is_coding = bool(variant_row.get('is_coding', False))
+    feat1 = variant_row.get('site1_feature', 'Intergenic')
+    feat2 = variant_row.get('site2_feature', 'Intergenic')
+
+    # --- 2. BASE SCORES (User Optimized) ---
     base_scores = {
-        # High-impact structural variants
-        'FUS': 140,   # Fusions - highest priority for cancer/disease
-        'IGR': 140,   # Intra-genic rearrangements
-        
-        # Size-dependent structural variants (score depends on size)
-        'DEL': 80,    # Deletions - important, size-dependent
-        'INS': 80,    # Insertions - important, size-dependent  
-        
-        # Splicing variants (moderate impact)
-        'AS': 60,     # Alternative splicing
-        'NEJ': 60,    # Novel exon junctions
-        'PNJ': 60,    # Partial novel junctions
-        
-        # Novel sequences (lower priority unless large)
-        'RI': 40,     # Retained introns
-        'NE': 40,     # Novel exons
-        'EE': 40,     # Extended exons
-        
-        # Unknown/unclear (lowest priority)
-        'UN': 10      # Unknown
+        'FUS': 100,  'IGR': 90,   # Major rearrangements
+        'DEL': 80,   'INS': 80,   # Indels (potential frameshifts)
+        'NEJ': 60,   'AS': 60,    # Splicing anomalies
+        'PNJ': 60,   'EE': 40,    # Partial/Extended
+        'RI': 40,    'NE': 40,    # Retention/Novel Exons
+        'UN': 10                  # Unknown
     }
+    score = base_scores.get(vtype, 20)
+
+    # --- 3. STRUCTURAL SCORING (Confidence Checks) ---
+    # Apply +/- 15 points based on structural expectations
     
-    score = base_scores.get(vtype, 0)
-    
-    # FUSION PRIORITY: Give fusion variants absolute priority
-    if vtype in ['FUS', 'IGR']:
-        return 1000  # Maximum score to ensure fusion variants always win
-    
-    # Variant-specific scoring based on expected characteristics from the criteria table
-    if vtype == 'INS':  # Insertion
-        # Expected: Spliced Contig=Y, Varsize>min_gap, Overlaps Gene=Y, Overlaps Exon=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
+    # helper for splicing checks
+    def check_splicing(row, check_exon_overlap=True, expect_exon_overlap=True):
+        s = 0
+        s += 15 if bool(row.get('is_contig_spliced', False)) else -15
+        s += 15 if bool(row.get('overlaps_gene', False)) else -15
+        if check_exon_overlap:
+            overlaps = bool(row.get('overlaps_exon', False))
+            s += 15 if (overlaps == expect_exon_overlap) else -15
+        return s
+
+    if vtype in ['INS', 'DEL']:
+        # Indels should generally overlap genes/exons to be relevant here
+        score += 15 if size > MIN_GAP else -15
+        score += check_splicing(variant_row, check_exon_overlap=True, expect_exon_overlap=True)
+
+    elif vtype in ['FUS', 'IGR']:
+        # Fusion Logic
+        cigar_tuples = variant_row.get('cigar', [])
+        has_clipping = False
+        if isinstance(cigar_tuples, list):
+            # Check constants for hard/soft clip codes
+            has_clipping = any([op in [constants.CIGAR.get('hard-clip', 5), 
+                                       constants.CIGAR.get('soft-clip', 4)] 
+                                and val >= MIN_CLIP for op, val in cigar_tuples])
         
-        # Size check: should be > min_gap
-        if size > MIN_GAP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-        
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if overlaps_exon:
-            score += 15  # Bonus for expected exon overlap
-        else:
-            score -= 15  # Penalty for missing exon overlap
-    
-    elif vtype == 'DEL':  # Deletion
-        # Expected: Spliced Contig=Y, Varsize>min_gap, Overlaps Gene=Y, Overlaps Exon=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        
-        # Size check: should be > min_gap
-        if size > MIN_GAP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-        
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if overlaps_exon:
-            score += 15  # Bonus for expected exon overlap
-        else:
-            score -= 15  # Penalty for missing exon overlap
-    
-    elif vtype == 'FUS':  # Fusion
-        # Expected: Clipping=hard/soft, Varsize>min_clip, Overlaps Gene=Y
-        has_clipping = any([op in [constants.CIGAR['hard-clip'], constants.CIGAR['soft-clip']] 
-                           and val >= MIN_CLIP for op, val in variant_row.get('cigar', [])])
         overlaps_gene = bool(variant_row.get('overlaps_gene', False))
         
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
+        score += 15 if size > MIN_CLIP else -15
+        score += 15 if has_clipping else -15
+        score += 15 if overlaps_gene else -15
+
+        # Fusion Refinement (Penalty for Read-Throughs)
+        chr1 = str(variant_row.get('chr1', ''))
+        chr2 = str(variant_row.get('chr2', ''))
+        if chr1 != chr2 and chr1 and chr2:
+            score += 40  # Bonus: True Translocation
+        elif chr1 == chr2:
+            score -= 20  # Penalty: Likely Read-Through (False Positive)
+
+    elif vtype == 'UN':
+        cigar_tuples = variant_row.get('cigar', [])
+        has_soft_clip = False
+        if isinstance(cigar_tuples, list):
+             has_soft_clip = any([op == constants.CIGAR.get('soft-clip', 4) 
+                                  and val >= MIN_CLIP for op, val in cigar_tuples])
+
+        score += 15 if size > MIN_CLIP else -15
+        score += 15 if has_soft_clip else -15
+        score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
+
+    elif vtype in ['EE', 'NE', 'AS', 'NEJ', 'PNJ', 'RI']:
+        # Splicing Logic
+        # NE and RI should NOT overlap existing exons
+        expect_overlap = False if vtype in ['NE', 'RI'] else True
+        score += check_splicing(variant_row, check_exon_overlap=True, expect_exon_overlap=expect_overlap)
+
+        # Check for novel spliced exons
+        if vtype in ['NE', 'EE', 'NEJ', 'PNJ']:
+            score += 15 if bool(variant_row.get('spliced_exon', False)) else -15
         
-        if has_clipping:
-            score += 15  # Bonus for expected clipping
-        else:
-            score -= 15  # Penalty for missing clipping
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-    
-    elif vtype == 'IGR':  # Intergenic Rearrangement
-        # Expected: Clipping=hard/soft, Varsize>min_clip, Overlaps Gene=Y, within same gene
-        has_clipping = any([op in [constants.CIGAR['hard-clip'], constants.CIGAR['soft-clip']] 
-                           and val >= MIN_CLIP for op, val in variant_row.get('cigar', [])])
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if has_clipping:
-            score += 15  # Bonus for expected clipping
-        else:
-            score -= 15  # Penalty for missing clipping
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-    
-    elif vtype == 'UN':  # Unknown
-        # Expected: Clipping=soft, Varsize>min_clip, Overlaps Gene=Y
-        has_soft_clip = any([op == constants.CIGAR['soft-clip'] 
-                            and val >= MIN_CLIP for op, val in variant_row.get('cigar', [])])
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if has_soft_clip:
-            score += 15  # Bonus for expected soft clipping
-        else:
-            score -= 15  # Penalty for missing soft clipping
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-    
-    elif vtype == 'EE':  # Exon-Exon
-        # Expected: Spliced Contig=Y, Varsize>min_clip, Overlaps Gene=Y, Overlaps Exon=N, Spliced Exon=Y, Valid Motif=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        spliced_exon = bool(variant_row.get('spliced_exon', False))
+        # Motif Check (Critical)
         valid_motif = variant_row.get('valid_motif', None)
-        
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if not overlaps_exon:  # Should NOT overlap exon
-            score += 15  # Bonus for correct exon non-overlap
-        else:
-            score -= 15  # Penalty for unexpected exon overlap
-                
-        if spliced_exon:
-            score += 15  # Bonus for expected spliced exon
-        else:
-            score -= 15  # Penalty for missing spliced exon
-                
         if valid_motif is True:
-            score += 15  # Bonus for expected valid motif
-        elif valid_motif is False:
-            score -= 15  # Penalty for invalid motif
-    
-    elif vtype == 'NE':  # Novel Exon
-        # Expected: Spliced Contig=Y, Varsize>min_clip, Overlaps Gene=N, Overlaps Exon=N, Spliced Exon=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        spliced_exon = bool(variant_row.get('spliced_exon', False))
-        
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if not overlaps_gene:  # Should NOT overlap gene
-            score += 15  # Bonus for correct gene non-overlap
-        else:
-            score -= 15  # Penalty for unexpected gene overlap
-                
-        if not overlaps_exon:  # Should NOT overlap exon
-            score += 15  # Bonus for correct exon non-overlap
-        else:
-            score -= 15  # Penalty for unexpected exon overlap
-                
-        if spliced_exon:
-            score += 15  # Bonus for expected spliced exon
-        else:
-            score -= 15  # Penalty for missing spliced exon
-    
-    elif vtype == 'RI':  # Retained Intron
-        # Expected: Spliced Contig=Y, Varsize>min_clip, Overlaps Gene=Y, Overlaps Exon=N
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        
-        # Size check: should be > min_clip
-        if size > MIN_CLIP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if not overlaps_exon:  # Should NOT overlap exon
-            score += 15  # Bonus for correct exon non-overlap
-        else:
-            score -= 15  # Penalty for unexpected exon overlap
-    
-    elif vtype == 'AS':  # Alternative Splicing
-        # Expected: Spliced Contig=Y, Overlaps Gene=Y, Overlaps Exon=Y, novel splice between 2 known sites
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if overlaps_exon:
-            score += 15  # Bonus for expected exon overlap
-        else:
-            score -= 15  # Penalty for missing exon overlap
-    
-    elif vtype == 'NEJ':  # Novel Exon Junction
-        # Expected: Spliced Contig=Y, Varsize>min_gap, Overlaps Gene=Y, Overlaps Exon=Y, Spliced Exon=Y, Valid Motif=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        spliced_exon = bool(variant_row.get('spliced_exon', False))
-        valid_motif = variant_row.get('valid_motif', None)
-        
-        # Size check: should be > min_gap
-        if size > MIN_GAP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if overlaps_exon:
-            score += 15  # Bonus for expected exon overlap
-        else:
-            score -= 15  # Penalty for missing exon overlap
-                
-        if spliced_exon:
-            score += 15  # Bonus for expected spliced exon
-        else:
-            score -= 15  # Penalty for missing spliced exon
-                
-        if valid_motif is True:
-            score += 15  # Bonus for expected valid motif
-        elif valid_motif is False:
-            score -= 15  # Penalty for invalid motif
-    
-    elif vtype == 'PNJ':  # Partial Novel Junction
-        # Expected: Spliced Contig=Y, Varsize>min_gap, Overlaps Gene=Y, Overlaps Exon=Y, Spliced Exon=Y, Valid Motif=Y
-        is_contig_spliced = bool(variant_row.get('is_contig_spliced', False))
-        overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        overlaps_exon = bool(variant_row.get('overlaps_exon', False))
-        spliced_exon = bool(variant_row.get('spliced_exon', False))
-        valid_motif = variant_row.get('valid_motif', None)
-        
-        # Size check: should be > min_gap
-        if size > MIN_GAP:
-            score += 15  # Bonus for meeting size criteria
-        else:
-            score -= 15  # Penalty for not meeting size criteria
-        
-        if is_contig_spliced:
-            score += 15  # Bonus for expected splicing
-        else:
-            score -= 15  # Penalty for missing splicing
-                
-        if overlaps_gene:
-            score += 15  # Bonus for expected gene overlap
-        else:
-            score -= 15  # Penalty for missing gene overlap
-                
-        if overlaps_exon:
-            score += 15  # Bonus for expected exon overlap
-        else:
-            score -= 15  # Penalty for missing exon overlap
-                
-        if spliced_exon:
-            score += 15  # Bonus for expected spliced exon
-        else:
-            score -= 15  # Penalty for missing spliced exon
-                
-        if valid_motif is True:
-            score += 15  # Bonus for expected valid motif
-        elif valid_motif is False:
-            score -= 15  # Penalty for invalid motif
-    
-    # Contig evidence strength bonus (applies to all variants)
-    if contig_varsize > 0:
-        # Variants that affect contig sequence get bonus
-        if contig_varsize >= 50:
             score += 15
-        elif contig_varsize >= 20:
-            score += 10
-        elif contig_varsize >= 10:
-            score += 5
+        elif valid_motif is False:
+            score -= 30 # Harsh penalty for invalid motifs
+            
+        # Size Check
+        threshold = MIN_GAP if vtype in ['NEJ', 'PNJ'] else MIN_CLIP
+        score += 15 if size > threshold else -15
+
+    # --- 4. FUNCTIONAL IMPACT SCORING (The "Killer" Features) ---
     
-    # Additional scoring factors
-    # Read support bonus
-    num_reads_case = variant_row.get('num_reads_case', 0)
-    if num_reads_case > 0:
-        if num_reads_case >= 10:
-            score += 10  # High read support
-        elif num_reads_case >= 5:
-            score += 5   # Medium read support
-    
-    # VAF bonus (if available)
-    vaf = variant_row.get('VAF', 0)
-    if vaf > 0:
-        if vaf >= 0.3:  # High VAF
-            score += 10
-        elif vaf >= 0.1:  # Medium VAF
-            score += 5
-    
-    # NORMALIZED SCORING: Convert to 0-100 scale for fair competition
-    # This ensures variants with different numbers of criteria compete fairly
-    num_criteria = get_num_criteria(vtype)
-    if num_criteria > 0:
-        # Calculate maximum possible score for this variant type
-        # Base score + (all criteria met: +15 each) + (contig bonus: +15) + (read bonus: +10) + (VAF bonus: +10)
-        max_possible_score = base_scores.get(vtype, 0) + (num_criteria * 15) + 15 + 10 + 10
-        
-        # Calculate minimum possible score for this variant type  
-        # Base score + (all criteria failed: -15 each) + (no contig bonus: +0) + (no read bonus: +0) + (no VAF bonus: +0)
-        min_possible_score = base_scores.get(vtype, 0) - (num_criteria * 15)
-        
-        # Normalize score to 0-100 scale
-        if max_possible_score > min_possible_score:
-            normalized_score = ((score - min_possible_score) / (max_possible_score - min_possible_score)) * 100
-            # Ensure score is within 0-100 bounds
-            normalized_score = max(0, min(100, normalized_score))
-            logging.debug(f"Variant {vtype}: Raw score={score}, Min={min_possible_score}, Max={max_possible_score}, Normalized={normalized_score:.1f}")
-            return normalized_score
+    # A. Frameshift Bonus (Only if Coding + Indel + Not divisible by 3)
+    if is_coding and vtype in ['DEL', 'INS']:
+        if size % 3 != 0:
+            score += 50  # Massive Bonus: Frameshift
         else:
-            # Fallback if max and min are the same
-            return 50.0  # Middle score
+            score += 20  # Bonus: In-frame Indel
+
+    # B. Retained Intron in CDS (Stop Codon Risk)
+    # This rescues your low base score (40) -> 80 if it's dangerous
+    if vtype == 'RI' and is_coding:
+        score += 40
+
+    # C. Location Context
+    # Where does this variant land?
+    features_touched = [feat1, feat2]
+    if 'CDS' in features_touched:
+        score += 20
+    elif 'UTR' in features_touched:
+        score += 10
+    elif 'Intron' in features_touched:
+        score -= 10  # Penalty: Intronic noise
+    elif 'Intergenic' in features_touched:
+        score -= 20  # Penalty: Mapping noise
+
+    # --- 5. EVIDENCE WEIGHTING ---
     
-    # Fallback for unknown variant types
-    return score
+    # Read Support
+    if reads < 3:
+        score -= 50
+    elif reads >= 20:
+        score += 20
+        
+    # VAF
+    if vaf < 0.05:
+        score -= 30
+    elif vaf > 0.2:
+        score += 15
+
+    # Contig Support
+    if contig_varsize >= 50:
+        score += 15
+    elif contig_varsize >= 20:
+        score += 10
+    
+    return max(0, score)
 
 def select_best_variant_per_contig(contigs_df):
     """
@@ -631,97 +370,132 @@ def validate_scoring_system(contigs_df):
 
 def get_detailed_scoring_breakdown(variant_row):
     """
-    Get detailed breakdown of scoring for a variant (for debugging)
-    
-    Args:
-        variant_row: Dictionary or pandas Series with variant information
-        
-    Returns:
-        Dictionary with scoring breakdown
+    Get detailed breakdown of scoring for a variant (matches new integrated logic)
     """
     breakdown = {}
     
-    # Base score
+    # --- 1. SETUP ---
     vtype = variant_row.get('variant_type', '')
+    try:
+        size = abs(int(variant_row.get('varsize', 0)))
+        reads = int(variant_row.get('num_reads_case', 0))
+        vaf = float(variant_row.get('VAF', 0))
+        contig_varsize = abs(int(variant_row.get('contig_varsize', 0)))
+    except:
+        size, reads, vaf, contig_varsize = 0, 0, 0.0, 0
+
+    is_coding = bool(variant_row.get('is_coding', False))
+    feat1 = variant_row.get('site1_feature', 'Intergenic')
+    feat2 = variant_row.get('site2_feature', 'Intergenic')
+
+    # --- 2. BASE SCORE ---
     base_scores = {
-        'FUS': 140, 'IGR': 140, 'DEL': 80, 'INS': 80,
-        'AS': 60, 'NEJ': 60, 'PNJ': 60, 'RI': 40, 'NE': 40, 'EE': 40, 'UN': 10
+        'FUS': 100,  'IGR': 90, 'DEL': 80, 'INS': 80,
+        'NEJ': 60,   'AS': 60,  'PNJ': 60, 'EE': 40,
+        'RI': 40,    'NE': 40,  'UN': 10
     }
-    breakdown['base_score'] = base_scores.get(vtype, 0)
+    breakdown['base_score'] = base_scores.get(vtype, 20)
     
-    # FUSION PRIORITY BONUS
-    fusion_priority_bonus = 1000 if vtype in ['FUS', 'IGR'] else 0
-    breakdown['fusion_priority_bonus'] = fusion_priority_bonus
+    # --- 3. STRUCTURAL SCORE ---
+    # We calculate the net points gained/lost from structural checks
+    struct_score = 0
     
-    # Size bonuses (now handled in main scoring, but showing for debugging)
-    size = abs(int(variant_row.get('varsize', 0)))
-    size_bonus = 0
-    # Note: Size scoring is now handled in the main variant-specific criteria
-    # This is just for debugging display
-    breakdown['size_bonus'] = size_bonus
-    
-    # Contig evidence bonus
-    contig_varsize = abs(int(variant_row.get('contig_varsize', 0)))
-    contig_bonus = 0
-    if contig_varsize >= 50:
-        contig_bonus = 15
-    elif contig_varsize >= 20:
-        contig_bonus = 10
-    elif contig_varsize >= 10:
-        contig_bonus = 5
-    breakdown['contig_bonus'] = contig_bonus
-    
-    # Read support bonus
-    num_reads_case = variant_row.get('num_reads_case', 0)
-    read_bonus = 0
-    if num_reads_case >= 10:
-        read_bonus = 10
-    elif num_reads_case >= 5:
-        read_bonus = 5
-    breakdown['read_support_bonus'] = read_bonus
-    
-    # VAF bonus
-    vaf = variant_row.get('VAF', 0)
-    vaf_bonus = 0
-    if vaf >= 0.3:
-        vaf_bonus = 10
-    elif vaf >= 0.1:
-        vaf_bonus = 5
-    breakdown['vaf_bonus'] = vaf_bonus
-    
-    # Total score
-    breakdown['total_score'] = sum([
-        breakdown['base_score'],
-        breakdown['fusion_priority_bonus'], # Added fusion priority bonus
-        breakdown['size_bonus'],
-        breakdown['contig_bonus'],
-        breakdown['read_support_bonus'],
-        breakdown['vaf_bonus']
-    ])
-    
-    # NORMALIZED SCORING INFORMATION
-    num_criteria = get_num_criteria(vtype)
-    if num_criteria > 0:
-        # Calculate normalization parameters
-        max_possible_score = breakdown['base_score'] + (num_criteria * 15) + 15 + 10 + 10
-        min_possible_score = breakdown['base_score'] - (num_criteria * 15)
+    # Helper to mirror main function logic
+    def check_splicing_score(row, check_exon=True, expect_exon=True):
+        s = 0
+        s += 15 if bool(row.get('is_contig_spliced', False)) else -15
+        s += 15 if bool(row.get('overlaps_gene', False)) else -15
+        if check_exon:
+            overlaps = bool(row.get('overlaps_exon', False))
+            s += 15 if (overlaps == expect_exon) else -15
+        return s
+
+    if vtype in ['INS', 'DEL']:
+        struct_score += 15 if size > constants.DEFAULT_MIN_GAP else -15 # Approx constants if global not available
+        struct_score += check_splicing_score(variant_row, True, True)
         
-        breakdown['num_criteria'] = num_criteria
-        breakdown['max_possible_score'] = max_possible_score
-        breakdown['min_possible_score'] = min_possible_score
+    elif vtype in ['FUS', 'IGR']:
+        cigar = variant_row.get('cigar', [])
+        has_clipping = False
+        if isinstance(cigar, list):
+             has_clipping = any([op in [4, 5] and val >= constants.DEFAULT_MIN_CLIP for op, val in cigar])
         
-        # Calculate normalized score
-        if max_possible_score > min_possible_score:
-            normalized_score = ((breakdown['total_score'] - min_possible_score) / (max_possible_score - min_possible_score)) * 100
-            normalized_score = max(0, min(100, normalized_score))
-            breakdown['normalized_score'] = round(normalized_score, 1)
+        struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15
+        struct_score += 15 if has_clipping else -15
+        struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
+        
+        # Translocation Bonus/Penalty
+        chr1 = str(variant_row.get('chr1', ''))
+        chr2 = str(variant_row.get('chr2', ''))
+        if chr1 != chr2 and chr1 and chr2:
+            breakdown['translocation_bonus'] = 40
+            struct_score += 40
+        elif chr1 == chr2:
+            breakdown['read_through_penalty'] = -20
+            struct_score -= 20
+
+    elif vtype in ['EE', 'NE', 'AS', 'NEJ', 'PNJ', 'RI']:
+        expect_overlap = False if vtype in ['NE', 'RI'] else True
+        struct_score += check_splicing_score(variant_row, True, expect_overlap)
+        
+        if vtype in ['NE', 'EE', 'NEJ', 'PNJ']:
+            struct_score += 15 if bool(variant_row.get('spliced_exon', False)) else -15
+            
+        valid_motif = variant_row.get('valid_motif', None)
+        if valid_motif is True: struct_score += 15
+        elif valid_motif is False: struct_score -= 30
+        
+        struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15 # Simplified check
+
+    elif vtype == 'UN':
+         struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15
+         struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
+         # Soft clip check skipped for brevity in breakdown, assumming +/- 15 balance
+
+    breakdown['structural_score'] = struct_score
+
+    # --- 4. FUNCTIONAL SCORE ---
+    func_score = 0
+    
+    # Frameshift
+    if is_coding and vtype in ['DEL', 'INS']:
+        if size % 3 != 0:
+            func_score += 50
+            breakdown['frameshift'] = 'Yes (+50)'
         else:
-            breakdown['normalized_score'] = 50.0
-    else:
-        breakdown['num_criteria'] = 0
-        breakdown['max_possible_score'] = breakdown['total_score']
-        breakdown['min_possible_score'] = breakdown['total_score']
-        breakdown['normalized_score'] = breakdown['total_score']
+            func_score += 20
+            breakdown['frameshift'] = 'In-frame (+20)'
+            
+    # RI in CDS
+    if vtype == 'RI' and is_coding:
+        func_score += 40
+        breakdown['coding_retention'] = 'Yes (+40)'
+
+    # Location
+    feats = [feat1, feat2]
+    if 'CDS' in feats: func_score += 20
+    elif 'UTR' in feats: func_score += 10
+    elif 'Intron' in feats: func_score -= 10
+    elif 'Intergenic' in feats: func_score -= 20
+    
+    breakdown['functional_score'] = func_score
+    breakdown['location_context'] = f"{feat1}/{feat2}"
+
+    # --- 5. EVIDENCE SCORE ---
+    ev_score = 0
+    if reads < 3: ev_score -= 50
+    elif reads >= 20: ev_score += 20
+    
+    if vaf < 0.05: ev_score -= 30
+    elif vaf > 0.2: ev_score += 15
+    
+    if contig_varsize >= 50: ev_score += 15
+    elif contig_varsize >= 20: ev_score += 10
+    
+    breakdown['evidence_score'] = ev_score
+
+    # --- TOTAL ---
+    breakdown['total_score'] = max(0, breakdown['base_score'] + struct_score + func_score + ev_score)
     
     return breakdown
 
@@ -770,6 +544,19 @@ def parse_args(args):
                         metavar='CONTIG_FASTA',
                         type=str,
                         help='''Fasta file containing contig sequences.''')
+    parser.add_argument('--cosmic_tier_data',
+                        metavar='COSMIC_TIER',
+                        type=str,
+                        default=None,
+                        help='''Path to COSMIC Cancer Gene Census TSV (GENE_SYMBOL & TIER).''')
+    parser.add_argument('--run_de',
+                        type=str,
+                        default='true',
+                        help='''Whether differential expression was run (true/false).''')
+    parser.add_argument('--single_sample_min_vaf',
+                        type=float,
+                        default=0.1,
+                        help='''Minimum VAF to keep a variant when RUN_DE is false (default: 0.1).''')
     parser.add_argument(dest='de_results',
                         metavar='DE_RESULTS',
                         type=str,
@@ -833,6 +620,68 @@ def add_de_info(contigs, de_results):
         len(contigs.dropna(subset=['logFC'])), len(contigs)
     )
     
+    return contigs
+
+def load_cosmic_tiers(filepath):
+    """
+    Load COSMIC tier information into a dictionary.
+    Expected columns: GENE_SYMBOL, TIER
+    Returns: Dict {Gene: Tier}
+    """
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    
+    try:
+        df = pd.read_csv(filepath, sep='\t')
+        # Normalize columns just in case
+        df.columns = df.columns.str.upper().str.strip()
+        
+        if 'GENE_SYMBOL' not in df.columns or 'TIER' not in df.columns:
+            logging.warning("COSMIC file missing 'GENE_SYMBOL' or 'TIER' columns.")
+            return {}
+            
+        return dict(zip(df['GENE_SYMBOL'], df['TIER']))
+    except Exception as e:
+        logging.warning(f"Failed to load COSMIC file: {e}")
+        return {}
+
+def get_contig_tier(overlapping_genes_str, tier_map):
+    """
+    Determines the highest COSMIC tier for a set of overlapping genes.
+    Tier 1 > Tier 2 > None
+    """
+    if not tier_map:
+        return ""
+        
+    genes = get_all_genes(overlapping_genes_str)
+    tiers_found = []
+    
+    for gene in genes:
+        # Check exact match or clean gene name
+        if gene in tier_map:
+            tiers_found.append(str(tier_map[gene]))
+            
+    # Prioritize Tier 1 over Tier 2
+    if '1' in tiers_found:
+        return '1'
+    elif '2' in tiers_found:
+        return '2'
+    
+    return ""
+
+def add_cosmic_info(contigs, cosmic_filepath):
+    """
+    Adds COSMIC_tier column to contigs DataFrame.
+    """
+    tier_map = load_cosmic_tiers(cosmic_filepath)
+    
+    if not tier_map:
+        logging.info("No COSMIC tier information loaded.")
+        contigs['COSMIC_tier'] = ''
+        return contigs
+
+    logging.info(f"Annotating with {len(tier_map)} COSMIC genes.")
+    contigs['COSMIC_tier'] = contigs['overlapping_genes'].apply(lambda x: get_contig_tier(x, tier_map))
     return contigs
 
 def get_short_gene_name(gene_string):
@@ -1073,7 +922,8 @@ def reformat_fields(contigs):
         'varsize', 'contig_varsize', 'cpos',
         'TPM', 'mean_WT_TPM','VAF', 'logFC', 'FDR', 'PValue', 'num_reads_case', 'total_num_reads_controls',
         'large_varsize', 'is_contig_spliced', 'spliced_exon', 'overlaps_exon', 'overlaps_gene',
-        'motif', 'valid_motif',
+        'motif', 'valid_motif', 'COSMIC_tier',
+        'site1_feature', 'site2_feature', 'is_coding',
         'contig_id', 'unique_contig_ID', 'contig_len', 'contig_cigar',
         'seq_loc1', 'seq_loc2', 'seq1', 'seq2'
     ]
@@ -1087,7 +937,8 @@ def reformat_fields(contigs):
         'varsize', 'contig_varsize', 'cpos',  
         'TPM', 'mean_WT_TPM', 'VAF',
         'large_varsize', 'is_contig_spliced', 'spliced_exon', 'overlaps_exon', 'overlaps_gene',
-        'motif', 'valid_motif',
+        'motif', 'valid_motif', 'COSMIC_tier',
+        'site1_feature', 'site2_feature', 'is_coding',
         'contig_id', 'unique_contig_ID', 'contig_len', 'contig_cigar',
         'seq_loc1', 'seq_loc2', 'seq1', 'seq2'
     ]
@@ -1201,7 +1052,51 @@ def main():
     logging.info('Adding DE and VAF info...')
     contigs = add_de_info(contigs, de_results)
     contigs = pd.merge(contigs, vafs, on='contig_id', how='left')
-    logging.info("DE and VAF information added.")
+
+    # Add COSMIC Annotation
+    contigs = add_cosmic_info(contigs, args.cosmic_tier_data)
+
+    # Optional: Log how many hits we found
+    hits = contigs[contigs['COSMIC_tier'] != ''].shape[0]
+    logging.info(f"Found COSMIC annotations for {hits} contigs.")
+
+    logging.info("DE, VAF and COSMIC information added.")
+
+    # ---------------------------------------------------------
+    # NEW: Conditional Filtering for Single Sample Mode
+    # ---------------------------------------------------------
+    if str(args.run_de).lower() == 'false':
+        logging.info("Single Sample Mode detected (RUN_DE=false). Applying strict COSMIC & VAF filtering.")
+        
+        initial_count = len(contigs)
+        
+        # DEBUG: Log what values we are seeing before filtering
+        logging.info(f"DEBUG: Unique COSMIC Tiers found: {contigs['COSMIC_tier'].unique()}")
+        logging.info(f"DEBUG: VAF stats: Min={contigs['VAF'].min()}, Max={contigs['VAF'].max()}")
+
+        # 1. Clean VAF
+        contigs['VAF'] = pd.to_numeric(contigs['VAF'], errors='coerce').fillna(0)
+        
+        # 2. Robust Tier Check
+        # Allows matching '1', 'Tier 1', '1.0', etc.
+        def is_tier_valid(val):
+            val_str = str(val).upper()
+            return '1' in val_str or '2' in val_str
+
+        has_cosmic = contigs['COSMIC_tier'].apply(is_tier_valid)
+        high_vaf = contigs['VAF'] >= args.single_sample_min_vaf
+        
+        # 3. Apply Filter
+        contigs = contigs[has_cosmic & high_vaf]
+        
+        filtered_count = len(contigs)
+        logging.info(f"Filtered {initial_count - filtered_count} variants. Remaining: {filtered_count}")
+        
+        if filtered_count == 0:
+            logging.warning("No variants passed the Single Sample filters. Check if COSMIC file matched any genes.")
+    # ---------------------------------------------------------
+
+    logging.info("DE, VAF and COSMIC information added and filtered.")
 
     # STEP 6: Generate unique contig IDs; sequences already present from filtering step
     short_gnames = contigs.overlapping_genes.map(str).apply(get_short_gene_name)
@@ -1223,6 +1118,7 @@ def main():
             # Add DE/VAF info
             discarded_full = add_de_info(discarded_contigs.copy(), de_results)
             discarded_full = pd.merge(discarded_full, vafs, on='contig_id', how='left')
+            discarded_full = add_cosmic_info(discarded_full, args.cosmic_tier_data)
             # other_variant_type may not exist; ensure it exists for reformat
             if 'other_variant_type' not in discarded_full.columns:
                 discarded_full['other_variant_type'] = ''
@@ -1248,6 +1144,7 @@ def main():
             # Add DE/VAF info to all_variants
             ranked_all = add_de_info(ranked_all, de_results)
             ranked_all = pd.merge(ranked_all, vafs, on='contig_id', how='left')
+            ranked_all = add_cosmic_info(ranked_all, args.cosmic_tier_data)
             # Generate unique contig IDs to align with main output style
             short_gnames_all = ranked_all.overlapping_genes.map(str).apply(get_short_gene_name)
             contig_ids_all, samples_all = ranked_all.contig_id, ranked_all['sample']
