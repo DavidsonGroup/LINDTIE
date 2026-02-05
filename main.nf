@@ -9,35 +9,6 @@ nextflow.enable.dsl = 2
  Contact: tan.j@wehi.edu.au
 ***************************************************************************/
 
-// Parameter declarations
-params.cases_fastq_dir = null
-params.controls_fastq_dir = null
-params.trans_fasta = null
-params.hg38_fasta = null
-params.hg38_splice_junctions = null
-params.ann_info = null
-params.tx_annotation = null
-params.tx2gene = null
-params.gencode_annotation = null
-params.cosmic_tier_data = null
-
-// Defaults
-params.assembly_mode = 'hybrid'     // 'hybrid', 'denovo', or 'ref_guided'
-params.minimap2_preset = 'map-ont'  // 'map-ont', 'map-pb', 'map-hifi', 'lr:hq'
-params.rnabloom2_preset = ''        // '', '-lrpb'
-params.subset_count = null          // NULL for no subsetting, otherwise the number of reads to subset to
-params.RUN_DE = true                // true or false
-params.fdr = 0.05
-params.min_cpm = 0.5
-params.min_logfc = 2
-params.min_clip = 20
-params.min_gap = 7
-params.min_match = "30,0.3"
-params.splice_motif_mismatch = 1
-params.oarfish_num_bootstraps = 10
-params.gene_filter = null
-params.var_filter = null
-params.single_sample_min_vaf = 0.1
 params.help = false
 params.version = false
 
@@ -59,7 +30,8 @@ Example usage:
     --assembly_mode "ref_guided"
 
 Optional parameters:
---assembly_mode             : Strategy: 'hybrid', 'denovo', 'ref_guided' (default: hybrid)
+--assembly_mode             : Strategy: 'hybrid', 'denovo', 'ref_guided', 'denovo_subset' (default: hybrid)
+--subset_count              : Number of reads to subset to (default: NULL)
 --minimap2_preset           : Minimap2 preset (passed to -ax). Default: 'map-ont'.
 --rnabloom2_preset          : RNABloom2 preset. Leave empty for ONT (default). Use '-lrpb' for PacBio.
 --RUN_DE                    : Run differential expression analysis. Options: true (default) or false.
@@ -71,7 +43,6 @@ Optional parameters:
 --min_match                 : Minimum match (default: "30,0.3")
 --splice_motif_mismatch     : Splice motif mismatch (default: 1)
 --oarfish_num_bootstraps    : Number of bootstraps for Oarfish (default: 10)
---gencode_annotation        : Path to GENCODE GTF for reference-guided assembly.
 --gene_filter               : List of genes to filter (default: NULL)
 --var_filter                : List of variant types to filter (default: NULL)
 --single_sample_min_vaf     : Minimum VAF to keep a variant when RUN_DE is false (default: 0.1)
@@ -102,22 +73,22 @@ log.info "======================================================================
 
 include { decompress_case_reads } from './modules/decompress'
 include { decompress_control_reads } from './modules/decompress'
-include { align_raw_reads_to_hg38 } from './modules/assembly_new'
-include { ref_guided_assembly } from './modules/assembly_new'
-include { subset_reads } from './modules/assembly_new'
-include { de_novo_assembly } from './modules/assembly_new'
-include { merge_refTrans_assembly } from './modules/assembly_new'
+include { align_raw_reads_to_hg38 } from './modules/assembly'
+include { ref_guided_assembly } from './modules/assembly'
+include { subset_reads } from './modules/assembly'
+include { de_novo_assembly } from './modules/assembly'
+include { merge_refTrans_assembly } from './modules/assembly'
 include { case_align_quant } from './modules/quantification'
 include { control_align_quant } from './modules/quantification'
 include { build_transcript_matrix } from './modules/differentialExpression'
 include { compare_transcript_oarfish } from './modules/differentialExpression'
 include { filter_de_contigs } from './modules/differentialExpression'
 include { align_contigs_to_genome } from './modules/differentialExpression'
-include { annotate_contigs } from './modules/annotation_new'
-include { refine_annotation } from './modules/annotation_new'
-include { filter_refined_annotated_contigs_fasta } from './modules/annotation_new'
-include { estimate_vaf } from './modules/annotation_new'
-include { post_process } from './modules/annotation_new'
+include { annotate_contigs } from './modules/annotation'
+include { refine_annotation } from './modules/annotation'
+include { filter_refined_annotated_contigs_fasta } from './modules/annotation'
+include { estimate_vaf } from './modules/annotation'
+include { post_process } from './modules/annotation'
 
 /*************************** LOCAL PROCESSES **************************/
 process save_params {
@@ -264,11 +235,11 @@ workflow {
         
         ch_aligned = align_raw_reads_to_hg38(
             ch_reads_for_alignment, 
-            Channel.fromPath(params.hg38_fasta)
+            Channel.fromPath(params.hg38_fasta),
+            Channel.fromPath(params.hg38_splice_junctions)
         )
 
-        // Determine which BAM goes to StringTie
-        // denovo_subset treated like ref_guided (keep all)
+        // Determine which BAM goes to reference-guided assembly
         if (params.assembly_mode == 'ref_guided' || params.assembly_mode == 'denovo_subset') {
             ch_aligned_bam_for_stringtie = ch_aligned.all_mapped_bam
         } else {
@@ -291,7 +262,7 @@ workflow {
         
         ch_ref_guided_assembled = ref_guided_assembly(
             ch_aligned_bam_for_stringtie,
-            Channel.fromPath(params.gencode_annotation),
+            Channel.fromPath(params.tx_annotation),
             Channel.fromPath(params.hg38_fasta)
         )
         ch_stringtie_assembly = ch_ref_guided_assembled.stringtie2_assembled_fa
@@ -322,7 +293,7 @@ workflow {
         ch_merged_ref.merged_ref.join(ch_decompressed_case_reads, by: 0)
     )
 
-    // Controls: Align + Quant (ONLY IF RUN_DE)
+    // Controls: Align + Quant (ONLY IF RUN_DE = TRUE)
     if (params.RUN_DE) {
         ch_control_align_quant_result = control_align_quant(
             ch_merged_ref.merged_ref.combine(ch_decompressed_control_reads)
