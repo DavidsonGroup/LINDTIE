@@ -220,6 +220,7 @@ process post_process {
       --cosmic_tier_data ${params.cosmic_tier_data} \
       --run_de ${params.RUN_DE} \
       --single_sample_min_vaf ${params.single_sample_min_vaf} \
+      --detect_viral_integration ${params.detect_viral_integration} \
       --log final_post_process.log \
       --all_variants_out ${sample_id}_all_variants_ranked_results.tsv \
       --discard_out ${sample_id}_discarded_results.tsv \
