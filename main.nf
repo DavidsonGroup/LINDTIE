@@ -35,6 +35,7 @@ Optional parameters:
 --minimap2_preset           : Minimap2 preset (passed to -ax). Default: 'map-ont'.
 --rnabloom2_preset          : RNABloom2 preset. Leave empty for ONT (default). Use '-lrpb' for PacBio.
 --RUN_DE                    : Run differential expression analysis. Options: true (default) or false.
+--detect_viral_integration  : Detect viral integration. Options: true or false (default: false).
 --fdr                       : False discovery rate (FDR) threshold (default: 0.05)
 --min_cpm                   : Minimum counts per million (CPM) (default: 0.5)
 --min_logfc                 : Minimum log fold change (default: 2)
@@ -106,24 +107,25 @@ process save_params {
     script:
     """
     cat <<EOF > run_parameters.log
-Sample ID             : ${sample_id}
-Timestamp             : ${new Date().format('yyyy-MM-dd HH:mm:ss')}
-assembly_mode         : ${params.assembly_mode}
-subset_count          : ${params.subset_count}
-RUN_DE                : ${params.RUN_DE}
-minimap2_preset       : ${params.minimap2_preset}
-rnabloom2_preset      : ${params.rnabloom2_preset}
-fdr                   : ${params.fdr}
-min_cpm               : ${params.min_cpm}
-min_logfc             : ${params.min_logfc}
-min_clip              : ${params.min_clip}
-min_gap               : ${params.min_gap}
-min_match             : '${params.min_match}'
-splice_motif_mismatch : ${params.splice_motif_mismatch}
-oarfish_num_bootstraps: ${params.oarfish_num_bootstraps}
-gene_filter           : ${params.gene_filter}
-var_filter            : ${params.var_filter}
-single_sample_min_vaf : ${params.single_sample_min_vaf}
+Sample ID               : ${sample_id}
+Timestamp               : ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+assembly_mode           : ${params.assembly_mode}
+subset_count            : ${params.subset_count}
+RUN_DE                  : ${params.RUN_DE}
+detect_viral_integration: ${params.detect_viral_integration}
+minimap2_preset         : ${params.minimap2_preset}
+rnabloom2_preset        : ${params.rnabloom2_preset}
+fdr                     : ${params.fdr}
+min_cpm                 : ${params.min_cpm}
+min_logfc               : ${params.min_logfc}
+min_clip                : ${params.min_clip}
+min_gap                 : ${params.min_gap}
+min_match               : '${params.min_match}'
+splice_motif_mismatch   : ${params.splice_motif_mismatch}
+oarfish_num_bootstraps  : ${params.oarfish_num_bootstraps}
+gene_filter             : ${params.gene_filter}
+var_filter              : ${params.var_filter}
+single_sample_min_vaf   : ${params.single_sample_min_vaf}
 EOF
     """
 }
