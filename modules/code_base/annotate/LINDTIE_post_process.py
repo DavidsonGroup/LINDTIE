@@ -591,6 +591,10 @@ def parse_args(args):
                         type=str,
                         default='',
                         help='''Optional path to write contigs discarded due to polyA/T or dinucleotide repeats in seq1/seq2.''')
+    parser.add_argument('--detect_viral_integration',
+                        type=str,
+                        default='false',
+                        help='''Whether to keep viral integration variants (true/false). Default: false.''')
     return parser.parse_args(args)
 
 def get_all_genes(overlapping_genes):
@@ -624,12 +628,12 @@ def add_de_info(contigs, de_results):
 
 def load_cosmic_tiers(filepath):
     """
-    Load COSMIC tier information into a dictionary.
-    Expected columns: GENE_SYMBOL, TIER
-    Returns: Dict {Gene: Tier}
+    Load COSMIC tier and fusion information.
+    Expected columns: GENE_SYMBOL, TIER, COSMIC_fusion
+    Returns: (tier_map, fusion_map)
     """
     if not filepath or not os.path.exists(filepath):
-        return {}
+        return {}, {}
     
     try:
         df = pd.read_csv(filepath, sep='\t')
@@ -638,12 +642,18 @@ def load_cosmic_tiers(filepath):
         
         if 'GENE_SYMBOL' not in df.columns or 'TIER' not in df.columns:
             logging.warning("COSMIC file missing 'GENE_SYMBOL' or 'TIER' columns.")
-            return {}
-            
-        return dict(zip(df['GENE_SYMBOL'], df['TIER']))
+            return {}, {}
+        
+        tier_map = dict(zip(df['GENE_SYMBOL'], df['TIER']))
+        
+        fusion_map = {}
+        if 'COSMIC_FUSION' in df.columns:
+            fusion_map = dict(zip(df['GENE_SYMBOL'], df['COSMIC_FUSION']))
+        
+        return tier_map, fusion_map
     except Exception as e:
         logging.warning(f"Failed to load COSMIC file: {e}")
-        return {}
+        return {}, {}
 
 def get_contig_tier(overlapping_genes_str, tier_map):
     """
@@ -671,17 +681,24 @@ def get_contig_tier(overlapping_genes_str, tier_map):
 
 def add_cosmic_info(contigs, cosmic_filepath):
     """
-    Adds COSMIC_tier column to contigs DataFrame.
+    Adds COSMIC_tier and COSMIC_fusion columns to contigs DataFrame.
     """
-    tier_map = load_cosmic_tiers(cosmic_filepath)
+    tier_map, fusion_map = load_cosmic_tiers(cosmic_filepath)
     
     if not tier_map:
         logging.info("No COSMIC tier information loaded.")
         contigs['COSMIC_tier'] = ''
-        return contigs
-
-    logging.info(f"Annotating with {len(tier_map)} COSMIC genes.")
-    contigs['COSMIC_tier'] = contigs['overlapping_genes'].apply(lambda x: get_contig_tier(x, tier_map))
+    else:
+        logging.info(f"Annotating with {len(tier_map)} COSMIC genes.")
+        contigs['COSMIC_tier'] = contigs['overlapping_genes'].apply(lambda x: get_contig_tier(x, tier_map))
+    
+    # Default fusion annotation if column missing or no data
+    if not fusion_map:
+        contigs['COSMIC_fusion'] = ''
+    else:
+        contigs['COSMIC_fusion'] = contigs['overlapping_genes'].apply(
+            lambda x: 'Yes' if any(g in fusion_map and str(fusion_map[g]).strip().upper() == 'YES' for g in get_all_genes(x)) else 'No'
+        )
     return contigs
 
 def get_short_gene_name(gene_string):
@@ -780,6 +797,28 @@ def ensure_seq_columns(df):
     for col in ['seq_loc1', 'seq_loc2', 'seq1', 'seq2']:
         if col not in df.columns:
             df[col] = ''
+    return df
+
+def filter_variants_with_chr(df, label, detect_viral_integration=False):
+    '''
+    Keep variants where chr1 or chr2 contains lowercase "chr".
+    If detect_viral_integration is False, drop cases where only one side has "chr".
+    '''
+    if df.empty:
+        return df
+    chr1_has_chr = df['chr1'].astype(str).str.contains('chr', case=True, na=False)
+    chr2_has_chr = df['chr2'].astype(str).str.contains('chr', case=True, na=False)
+    any_chr = chr1_has_chr | chr2_has_chr
+    filtered_out = (~any_chr).sum()
+    if filtered_out > 0:
+        logging.info("Filtered %d %s variants without 'chr' in chr1/chr2.", filtered_out, label)
+    df = df[any_chr]
+    if not detect_viral_integration:
+        viral_mask = chr1_has_chr ^ chr2_has_chr
+        viral_filtered = viral_mask.sum()
+        if viral_filtered > 0:
+            logging.info("Filtered %d %s viral-integration variants.", viral_filtered, label)
+        df = df[~viral_mask]
     return df
 
 def filter_contigs_by_sequence_repeats(contigs, contig_fasta):
@@ -922,10 +961,10 @@ def reformat_fields(contigs):
         'varsize', 'contig_varsize', 'cpos',
         'TPM', 'mean_WT_TPM','VAF', 'logFC', 'FDR', 'PValue', 'num_reads_case', 'total_num_reads_controls',
         'large_varsize', 'is_contig_spliced', 'spliced_exon', 'overlaps_exon', 'overlaps_gene',
-        'motif', 'valid_motif', 'COSMIC_tier',
+        'motif', 'valid_motif', 'COSMIC_tier', 'COSMIC_fusion',
         'site1_feature', 'site2_feature', 'is_coding',
         'contig_id', 'unique_contig_ID', 'contig_len', 'contig_cigar',
-        'seq_loc1', 'seq_loc2', 'seq1', 'seq2'
+        'seq_loc1', 'seq_loc2', 'seq1', 'seq2', 'variant_score'
     ]
 
     # Final column order when DE columns are not available
@@ -937,10 +976,10 @@ def reformat_fields(contigs):
         'varsize', 'contig_varsize', 'cpos',  
         'TPM', 'mean_WT_TPM', 'VAF',
         'large_varsize', 'is_contig_spliced', 'spliced_exon', 'overlaps_exon', 'overlaps_gene',
-        'motif', 'valid_motif', 'COSMIC_tier',
+        'motif', 'valid_motif', 'COSMIC_tier', 'COSMIC_fusion',
         'site1_feature', 'site2_feature', 'is_coding',
         'contig_id', 'unique_contig_ID', 'contig_len', 'contig_cigar',
-        'seq_loc1', 'seq_loc2', 'seq1', 'seq2'
+        'seq_loc1', 'seq_loc2', 'seq1', 'seq2', 'variant_score'
     ]
 
     # Sort by PValue (ascending) if available, otherwise by VAF (descending)
@@ -1010,6 +1049,13 @@ def main():
     # Extract sequences, discard contigs with polyA/T or dinucleotide repeats in seq1/seq2
     contigs['sample'] = args.sample
     kept_contigs, discarded_contigs = filter_contigs_by_sequence_repeats(contigs, args.contig_fasta)
+    # Compute variants-per-contig from the original (pre-filter) contigs
+    vars_per_contig = contigs.groupby('contig_id', as_index=False).agg(
+        {'variant_id': lambda x: len(np.unique(x))}
+    ).rename({'variant_id': 'vars_in_contig'}, axis=1)
+    # Attach vars_in_contig to filtered subsets
+    kept_contigs = kept_contigs.merge(vars_per_contig, on='contig_id', how='left')
+    discarded_contigs = discarded_contigs.merge(vars_per_contig, on='contig_id', how='left')
     # Ensure sequence columns are present and preserved going forward
     kept_contigs = ensure_seq_columns(kept_contigs)
     discarded_contigs = ensure_seq_columns(discarded_contigs)
@@ -1020,16 +1066,13 @@ def main():
     # STEP 2: Apply improved variant consolidation using scoring system on remaining contigs
     logging.info("Processing %d filtered variants using improved scoring system", len(kept_contigs))
     contigs = add_other_variant_types_by_contig(kept_contigs)
+    # Persist per-row scores so they can be emitted in final output
+    contigs['variant_score'] = contigs.apply(calculate_variant_score, axis=1)
     logging.info(f"After variant consolidation: {len(contigs)} variants")
 
     # Validate the scoring system worked correctly
     validate_scoring_system(contigs)
 
-    # Calculate variants per contig (needed for downstream processing)
-    vars_per_contig = contigs.groupby('contig_id', as_index=False)
-    vars_per_contig = vars_per_contig.agg({'variant_id': lambda x: len(np.unique(x))})
-    vars_per_contig = vars_per_contig.rename({'variant_id': 'vars_in_contig'}, axis=1)
-    contigs = contigs.merge(vars_per_contig, on='contig_id')
     logging.info("Added variants per contig information.")
 
     # STEP 3: Apply variant type filtering if specified
@@ -1111,6 +1154,10 @@ def main():
     contigs = ensure_seq_columns(contigs)
     contigs = reformat_fields(contigs)
 
+    # Filter out variants where neither chr1 nor chr2 contains "chr"
+    detect_viral = str(args.detect_viral_integration).lower() == 'true'
+    contigs = filter_variants_with_chr(contigs, "final", detect_viral_integration=detect_viral)
+
     # If requested, produce a discard TSV with identical columns to final output
     if getattr(args, 'discard_out', '') and not discarded_contigs.empty:
         try:
@@ -1122,6 +1169,9 @@ def main():
             # other_variant_type may not exist; ensure it exists for reformat
             if 'other_variant_type' not in discarded_full.columns:
                 discarded_full['other_variant_type'] = ''
+            # Ensure variant_score exists for output column ordering
+            if 'variant_score' not in discarded_full.columns:
+                discarded_full['variant_score'] = discarded_full.apply(calculate_variant_score, axis=1)
             # Generate unique contig IDs and sequences
             short_gnames_disc = discarded_full.overlapping_genes.map(str).apply(get_short_gene_name)
             disc_ids, disc_samples = discarded_full.contig_id, discarded_full['sample']
@@ -1131,6 +1181,9 @@ def main():
             discarded_full = ensure_seq_columns(discarded_full)
             # Reformat to final columns and write
             discarded_final = reformat_fields(discarded_full)
+            discarded_final = filter_variants_with_chr(
+                discarded_final, "discarded", detect_viral_integration=detect_viral
+            )
             discarded_final.to_csv(args.discard_out, index=False, sep='\t', na_rep='NA')
             logging.info(f"Wrote discard file to {args.discard_out}")
         except Exception as e:
@@ -1163,10 +1216,17 @@ def main():
             chr2_all, pos2_vals_all, str2_all = zip(*pos2_all)
             ranked_all['chr1'], ranked_all['pos1'], ranked_all['strand1'] = chr1_all, pos1_vals_all, str1_all
             ranked_all['chr2'], ranked_all['pos2'], ranked_all['strand2'] = chr2_all, pos2_vals_all, str2_all
+            ranked_all = filter_variants_with_chr(
+                ranked_all, "all-variants ranked", detect_viral_integration=detect_viral
+            )
             # Compose final ordering to strictly follow the main output's column order
             base_cols = list(contigs.columns)
-            # Define ranking columns that should be preserved
-            ranking_cols = [c for c in ['variant_score', 'rank_within_contig', 'is_primary'] if c in ranked_all.columns]
+            # Define ranking columns that should be preserved (avoid duplicates)
+            base_cols = list(contigs.columns)
+            ranking_cols = [
+                c for c in ['variant_score', 'rank_within_contig', 'is_primary']
+                if c in ranked_all.columns and c not in base_cols
+            ]
             # Filter out extra DE columns that aren't in the original output
             extra_de_cols = ['variant_of_interest', 'logCPM', 'F', 'len', 'Overdispersion']
             # Start with the exact column order from the main output
