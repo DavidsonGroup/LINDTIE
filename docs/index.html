@@ -2269,15 +2269,10 @@ nextflow run $LINDTIE_dir/main.nf -params-file $LINDTIE_dir/params.yaml -profile
                         </div>
                     
                         <pre class="language-yaml"><code class="language-yaml"># Default parameters for the workflow
-# Assembly Mode: 'hybrid', 'denovo_subset', 'denovo', or 'ref_guided'
+# Assembly Mode: 'hybrid', 'denovo', 'denovo_subset', or 'ref_guided'
 assembly_mode: 'hybrid'
 
-######################## Tool Presets ########################
-# rnabloom2 presets:
-#   ''      : Leave empty for ONT (default)
-#   'lrpb'  : For PacBio
-rnabloom2_preset: ''
-
+# Tool Presets
 # minimap2 presets (passed to -ax):
 #   'map-ont' : Oxford Nanopore genomic reads (default)
 #   'map-pb'  : PacBio CLR genomic reads
@@ -2285,20 +2280,25 @@ rnabloom2_preset: ''
 #   'lr:hq'   : Nanopore Q20 genomic reads (v2.27+)
 minimap2_preset: 'map-ont'
 
-######################## Filtering & Thresholds ########################
-subset_count: null          # NULL for no subsetting, otherwise the number of reads to subset to
-RUN_DE: true                # true or false (default: true)
-fdr: 0.05                   # default 0.05
-min_cpm: 0.5                # default 0.5
-min_logfc: 2                # default 2
-min_clip: 20                # default 20
-min_gap: 7                  # default 7
-min_match: '30,0.3'         # default '30,0.3'
-splice_motif_mismatch: 1    # default 1
-oarfish_num_bootstraps: 10  # default 10
-gene_filter: NULL           # default NULL (e.g. "TP53,BRCA2")
-var_filter: NULL            # default NULL (e.g. "DEL,INS")
-single_sample_min_vaf: 0.1  # default 0.1
+# rnabloom2 presets:
+#   ''       : Leave empty for ONT (default)
+#   '-lrpb'  : For PacBio
+rnabloom2_preset: ''
+
+subset_count: null               # NULL for no subsetting, otherwise the number of reads to subset to
+detect_viral_integration: false  # true or false (default: false)
+RUN_DE: true                     # true or false (default: true)
+fdr: 0.05                        # default 0.05
+min_cpm: 0.5                     # default 0.5
+min_logfc: 2                     # default 2
+min_clip: 20                     # default 20
+min_gap: 7                       # default 7
+min_match: '30,0.3'              # default '30,0.3'
+splice_motif_mismatch: 1         # default 1
+oarfish_num_bootstraps: 10       # default 10
+gene_filter: NULL                # default NULL (e.g. "TP53,BRCA2")
+var_filter: NULL                 # default NULL (e.g. "DEL,INS")
+single_sample_min_vaf: 0.1       # default 0.1
                             </code></pre>
                     </div>
                 </div>
