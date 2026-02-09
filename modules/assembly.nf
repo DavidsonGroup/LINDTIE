@@ -19,33 +19,40 @@ process align_raw_reads_to_hg38 {
     tag "${sample_id}"
     label 'process_long'
 
-    publishDir "${sample_id}_output/01-Assembly/", mode: 'copy', pattern: '*.{log,bam}'
+    publishDir "${sample_id}_output/01-Assembly/", mode: 'copy', pattern: '*.{log,bam,bam.bai}'
 
     container 'oras://community.wave.seqera.io/library/minimap2_samtools:e98addfcfd60e8e7'
 
     input:
       tuple val(sample_id), path(reads)
       path hg38_fasta
+      path hg38_splice_junctions
 
     output:
       tuple val(sample_id), path("confident_mapped.bam"), emit: confident_mapped_bam
+      tuple val(sample_id), path("confident_mapped.bam.bai"), emit: confident_mapped_bam_bai
       tuple val(sample_id), path("reads_all_sorted.bam"), emit: all_mapped_bam
+      tuple val(sample_id), path("reads_all_sorted.bam.bai"), emit: all_mapped_bam_bai
       tuple val(sample_id), path("rescued.fastq"), emit: rescued_fastq
       tuple val(sample_id), path("read_counts_summary.log"), emit: read_counts_summary, optional: true
 
     script:
     """
     # 1. Align reads to reference genome
-    minimap2 -t ${task.cpus} -ax splice --secondary=no \\
+    minimap2 -t ${task.cpus} -ax splice --secondary=no --junc-bed ${hg38_splice_junctions} \\
       ${hg38_fasta} ${reads} | \\
       samtools sort -@ ${task.cpus} -o reads_all_sorted.bam
 
     samtools index reads_all_sorted.bam
 
-    # 2. Single-Pass Routing
-    # Pass 'mode' variable to AWK
-    samtools view -h reads_all_sorted.bam |
+    # 2. Two-Pass Routing
+    # Pass 1: collect read names that have any supplementary alignment
+    samtools view reads_all_sorted.bam | \
+      awk 'int(\$2 / 2048) % 2 { print \$1 }' | sort -u > supp_ids.txt
+
+    # Pass 2: route reads; any read with supplementary alignment goes to rescued
     awk -v mode="${params.assembly_mode}" '
+      FNR==NR { has_supp[\$1]=1; next }
       BEGIN {
         n_total=0; n_confident=0; n_rescued=0;
         r_unmapped=0; r_supp=0; r_low_mapq=0; r_indel=0; r_clip=0;
@@ -59,6 +66,7 @@ process align_raw_reads_to_hg38 {
       
       {
         n_total++
+        total_reads[\$1]=1
         flag = \$2
         mapq = \$5
         cigar = \$6
@@ -83,7 +91,13 @@ process align_raw_reads_to_hg38 {
             if (clipped_bases > 50) is_clipped = 1
         }
 
-        if (is_unmapped || is_supp || is_low_mapq || has_indel || is_clipped) {
+        if (has_supp[\$1]) {
+            print > "rescued.sam"
+            n_rescued++
+            r_supp++
+            rescued_reads[\$1]=1
+            rescue_supp[\$1]=1
+        } else if (is_unmapped || is_supp || is_low_mapq || has_indel || is_clipped) {
             print > "rescued.sam"
             n_rescued++
             if (is_unmapped) r_unmapped++
@@ -91,17 +105,35 @@ process align_raw_reads_to_hg38 {
             else if (is_low_mapq) r_low_mapq++
             else if (has_indel) r_indel++
             else if (is_clipped) r_clip++
+            rescued_reads[\$1]=1
+            if (is_unmapped) rescue_unmapped[\$1]=1
+            else if (is_supp) rescue_supp[\$1]=1
+            else if (is_low_mapq) rescue_low_mapq[\$1]=1
+            else if (has_indel) rescue_indel[\$1]=1
+            else if (is_clipped) rescue_clip[\$1]=1
         } else {
             print > "confident.sam"
             n_confident++
+            confident_reads[\$1]=1
         }
       }
     
     END {
+        # Unique read-name counts
+        for (r in total_reads) u_total++
+        for (r in confident_reads) u_confident++
+        for (r in rescued_reads) u_rescued++
+        for (r in rescue_unmapped) u_r_unmapped++
+        for (r in rescue_supp) u_r_supp++
+        for (r in rescue_low_mapq) u_r_low_mapq++
+        for (r in rescue_indel) u_r_indel++
+        for (r in rescue_clip) u_r_clip++
+
         # --- LOGGING SECTION ---
         print "Sample Alignment Summary" > "read_counts_summary.log"
         print "Mode: " mode >> "read_counts_summary.log"
-        print "Total Reads Processed: " n_total >> "read_counts_summary.log"
+        print "Alignment-level counts (SAM records)" >> "read_counts_summary.log"
+        print "Total Alignments Processed: " n_total >> "read_counts_summary.log"
         print "--------------------------------" >> "read_counts_summary.log"
 
         if (n_total > 0) {
@@ -111,7 +143,7 @@ process align_raw_reads_to_hg38 {
                 print "Sent to RNA-Bloom2 (Rescued):   " n_rescued " (" (n_rescued/n_total)*100 "%)" >> "read_counts_summary.log"
                 
                 print "--------------------------------" >> "read_counts_summary.log"
-                print "Rescue Reasons:" >> "read_counts_summary.log"
+                print "Rescue Reasons (Alignment-level):" >> "read_counts_summary.log"
                 print "  Unmapped:        " r_unmapped >> "read_counts_summary.log"
                 print "  Supplementary:   " r_supp >> "read_counts_summary.log"
                 print "  Low MAPQ (<20):  " r_low_mapq >> "read_counts_summary.log"
@@ -129,11 +161,26 @@ process align_raw_reads_to_hg38 {
                   print "(Note: These are the 'Remainder' reads not selected for De Novo)" >> "read_counts_summary.log"
                 }
             }
+            if (mode == "hybrid") {
+            print "--------------------------------" >> "read_counts_summary.log"
+            print "Read-level counts (unique read names)" >> "read_counts_summary.log"
+            print "Unique Read Names (Total): " u_total >> "read_counts_summary.log"
+            if (u_total > 0) {
+              print "Unique Reads to StringTie2:      " u_confident " (" (u_confident/u_total)*100 "%)" >> "read_counts_summary.log"
+              print "Unique Reads to RNA-Bloom2:      " u_rescued " (" (u_rescued/u_total)*100 "%)" >> "read_counts_summary.log"
+            }
+              print "Unique Rescue Reasons (Read-level):" >> "read_counts_summary.log"
+              print "  Unmapped:        " u_r_unmapped >> "read_counts_summary.log"
+              print "  Supplementary:   " u_r_supp >> "read_counts_summary.log"
+              print "  Low MAPQ (<20):  " u_r_low_mapq >> "read_counts_summary.log"
+              print "  Large Indel:     " u_r_indel >> "read_counts_summary.log"
+              print "  Soft Clipped:    " u_r_clip >> "read_counts_summary.log"
+            }
         } else {
             print "WARNING: No reads found in input." >> "read_counts_summary.log"
         }
       }
-    '
+    ' supp_ids.txt <(samtools view -h reads_all_sorted.bam)
 
     # 3. Convert outputs
     samtools view -b -@ ${task.cpus} confident.sam > confident_mapped.bam
@@ -165,7 +212,7 @@ process ref_guided_assembly {
 
     input:
       tuple val(sample_id), path(mapped_bam)
-      path gencode_annotation
+      path tx_annotation
       path hg38_fasta
 
     output:
@@ -175,7 +222,7 @@ process ref_guided_assembly {
     script:
     """
     # Assemble transcripts
-    stringtie ${mapped_bam} -G ${gencode_annotation} -p ${task.cpus} -L -o stringtie2.gtf
+    stringtie ${mapped_bam} -G ${tx_annotation} -p ${task.cpus} -L -o stringtie2.gtf
 
     # Extract novel transcripts & all exons belonging to those novel transcripts
     awk '\$3=="transcript" && \$0 !~ /reference_id/ {
@@ -293,19 +340,49 @@ process de_novo_assembly {
     mkdir -p 01-Assembly
 
     ## ---------------------------------------------------------
+    ## 0. De-duplicate Reads (by read name)
+    ## ---------------------------------------------------------
+    READS_INPUT="${reads}"
+    FIRST_CHAR=\$(head -n 1 "${reads}" | cut -c 1)
+    
+    if [ "\$FIRST_CHAR" == "@" ]; then
+        # FASTQ: remove duplicate read names (keep first)
+        awk 'NR%4==1 { h=\$0; sub(/^@/,"",h); dup=seen[h]++ }
+             { if (!dup) print }' "${reads}" > dedup_reads.fastq
+        READS_INPUT="dedup_reads.fastq"
+    elif [ "\$FIRST_CHAR" == ">" ]; then
+        # FASTA: remove duplicate read names (keep first)
+        awk '/^>/ { h=\$0; sub(/^>/,"",h); dup=seen[h]++ }
+             { if (!dup) print }' "${reads}" > dedup_reads.fasta
+        READS_INPUT="dedup_reads.fasta"
+    fi
+
+    ## ---------------------------------------------------------
     ## 1. Count Reads for Logging
     ## ---------------------------------------------------------
+    # Count raw input reads (before dedup)
+    RAW_FIRST_CHAR=\$(head -n 1 "${reads}" | cut -c 1)
+
+    if [ "\$RAW_FIRST_CHAR" == "@" ]; then
+        RAW_LINE_COUNT=\$(wc -l < "${reads}")
+        RAW_READ_COUNT=\$((RAW_LINE_COUNT / 4))
+    elif [ "\$RAW_FIRST_CHAR" == ">" ]; then
+        RAW_READ_COUNT=\$(grep -c "^>" "${reads}")
+    else
+        RAW_READ_COUNT="Unknown"
+    fi
+
     # Detect format by checking the first character of the file
     # @ = FASTQ, > = FASTA
-    FIRST_CHAR=\$(head -n 1 ${reads} | cut -c 1)
+    FIRST_CHAR=\$(head -n 1 "\${READS_INPUT}" | cut -c 1)
     
     if [ "\$FIRST_CHAR" == "@" ]; then
         # FASTQ: Count total lines and divide by 4
-        LINE_COUNT=\$(wc -l < ${reads})
+        LINE_COUNT=\$(wc -l < "\${READS_INPUT}")
         READ_COUNT=\$((LINE_COUNT / 4))
     elif [ "\$FIRST_CHAR" == ">" ]; then
         # FASTA: Count lines starting with '>'
-        READ_COUNT=\$(grep -c "^>" ${reads})
+        READ_COUNT=\$(grep -c "^>" "\${READS_INPUT}")
     else
         READ_COUNT="Unknown"
     fi
@@ -315,13 +392,14 @@ process de_novo_assembly {
     echo "Assembly Mode: ${params.assembly_mode}" >> 01-Assembly/denovo_read_counts.log
     echo "Subset Count: ${params.subset_count}" >> 01-Assembly/denovo_read_counts.log
     echo "--------------------------------" >> 01-Assembly/denovo_read_counts.log
-    echo "Reads Input to RNABloom2: \$READ_COUNT" >> 01-Assembly/denovo_read_counts.log
+    echo "Reads Input (Raw): \$RAW_READ_COUNT" >> 01-Assembly/denovo_read_counts.log
+    echo "Reads Input (Dedup): \$READ_COUNT" >> 01-Assembly/denovo_read_counts.log
 
     ## ---------------------------------------------------------
     ## 2. Run RNABloom2
     ## ---------------------------------------------------------
     ## Run RNABloom2 - params.rnabloom2_preset is optional only for '-lrpb' for PacBio data.
-    rnabloom ${bloom_mode} -long ${reads} -t ${task.cpus} -outdir 01-Assembly
+    rnabloom ${bloom_mode} -long "\${READS_INPUT}" -t ${task.cpus} -outdir 01-Assembly
     """
 }
 
