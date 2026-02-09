@@ -125,7 +125,8 @@ process compare_transcript_oarfish {
       python ${params.code_base}/DE/LINDTIE_get_novel_contigs.py \\
         ./${transcript_matrix} \\
         ${trans_fasta} \\
-        ${novel_fasta}
+        ${novel_fasta} \\
+        --min_cpm ${params.min_cpm}
               
       # Create empty files for optional outputs that won't be generated
       touch DE.log
