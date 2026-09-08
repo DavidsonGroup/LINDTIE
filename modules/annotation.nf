@@ -205,6 +205,12 @@ process count_supporting_reads {
     tag "${sample_id}"
     label 'process_medium'
 
+    // Wall time comes from `withName: 'count_supporting_reads'` in
+    // nextflow.config (24 h), NOT from process_medium's 8 h. It cannot be set
+    // here: config selectors override in-process directives, so a `time`
+    // directive in this body is silently ignored (verified - it rendered
+    // #SBATCH -t 08:00:00).
+
     publishDir "${sample_id}_output/FinalOutput", mode: 'copy', pattern: 'supporting_reads.tsv'
     publishDir "${sample_id}_output/FinalOutput/log", mode: 'copy', pattern: '*.log'
 
