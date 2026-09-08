@@ -4204,7 +4204,14 @@ conda-forge::r-arrow=19.0.1</code></pre>
                 <h2 id="v0.2.1">v0.2.1</h2>
                 <p style="color: var(--text-muted); font-size: 14px;">Released: 2026</p>
 
-                <p>A patch release fixing problems that prevented LINDTIE from starting, or from running correctly, outside the environment it was developed in. No analysis logic changed, with one exception noted below.</p>
+                <p>A patch release fixing problems that prevented LINDTIE from starting, or from running correctly, outside the environment it was developed in, plus a large speed-up of the supporting-read counting step. No analysis logic changed, with one exception noted below.</p>
+
+                <h3 id="v0.2.1-changed">Changed</h3>
+                <ul>
+                    <li><strong>Supporting-read counting now runs in parallel.</strong> The per-variant loop in <code>count_supporting_reads</code> is distributed across worker processes via a new <code>--threads</code> option, which the pipeline sets automatically from the CPUs allocated to the step. The counting logic is untouched and results are byte-identical at any thread count, because workers return their rows in input order.</li>
+                    <li>This matters because the per-variant cost is very uneven: on a mitochondria-rich sample the chrM variants carry 10,000-120,000 spanning reads each against a median of around 116 elsewhere, and because the input is ordered by chromosome with chrM last, one observed single-sample run spent 1 h 53 m on its first 43,000 variants and 8 h 45 m on the remaining 4,848.</li>
+                    <li><strong>The wall-time limit for <code>count_supporting_reads</code> was raised to 24 hours</strong>, set through a <code>withName</code> selector in <code>nextflow.config</code>. Single-sample runs have no differential expression step to narrow the candidate list first, so tens of thousands of variants reach this step rather than a few hundred.</li>
+                </ul>
 
                 <h3 id="v0.2.1-fixed">Fixed</h3>
                 <ul>
