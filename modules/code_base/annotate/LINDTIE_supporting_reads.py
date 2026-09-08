@@ -56,6 +56,7 @@ License     : MIT
 '''
 
 import logging
+import multiprocessing as mp
 import re
 import sys
 from argparse import ArgumentParser
@@ -159,6 +160,9 @@ def parse_args():
                    help='optional TSV of variant_id -> supporting read name')
     p.add_argument('--out', required=True, help='output TSV')
     p.add_argument('--log', default=None, help='record program progress in LOG_FILE')
+    p.add_argument('--threads', type=int, default=1,
+                   help='worker processes for the per-variant loop (default 1). '
+                        'Output is identical at any thread count.')
     # Accepted for backward compatibility with the old process command line; unused now.
     for dead in ('--contig_fasta', '--contig_bam', '--genome_fasta', '--flank',
                  '--max_edit_frac', '--both_ends_max_size', '--both_ends_min_depth',
@@ -788,6 +792,58 @@ def count_variant(row, case_bam, args, ref=None, support_writer=None, notes=None
     return rec
 
 
+# --------------------------------------------------------------------------
+# Parallel execution of the per-variant loop.
+#
+# count_variant() reads the BAM and the annotation and touches no shared state
+# beyond the support-read writer and a two-key counter, so the loop parallelises
+# without changing any of the counting logic.
+#
+# It is worth doing because the per-variant cost is extremely skewed. On a
+# mitochondria-rich sample the chrM variants carry 10k-120k spanning reads each
+# against a median of ~116 elsewhere, and the input is chromosome-sorted with
+# chrM last: one observed single-sample run spent 1h53m on the first 43,000
+# variants and 8h45m on the remaining 4,848.
+# --------------------------------------------------------------------------
+
+_W_BAM = None                  # per-worker pysam handle; see _worker_init
+_INFO = _ARGS = _REF = None    # set in main() before the pool forks
+
+
+class _SupportBuffer(object):
+    '''Quacks like the support-read file handle count_variant() writes to, but
+    collects the lines so the parent can emit them in input order. Preserving
+    that order is what keeps the parallel output byte-identical to the serial
+    output rather than merely equivalent.'''
+
+    __slots__ = ('lines',)
+
+    def __init__(self):
+        self.lines = []
+
+    def write(self, s):
+        self.lines.append(s)
+
+
+def _worker_init(bam_path):
+    # A pysam/htslib handle carries an internal file offset, so forked children
+    # must not share the parent's - concurrent seeks would interleave and return
+    # the wrong reads. Each worker opens its own.
+    #
+    # _INFO/_ARGS/_REF are deliberately NOT passed as initargs: under fork they
+    # are inherited copy-on-write, so the variant table and the parsed GTF cost
+    # nothing to share and the annotation is not re-parsed per worker.
+    global _W_BAM
+    _W_BAM = pysam.AlignmentFile(bam_path, 'rb')
+
+
+def _work_one(i):
+    buf = _SupportBuffer()
+    notes = {'near_canonical': 0, 'ee_no_novel_region': 0}
+    rec = count_variant(_INFO.iloc[i], _W_BAM, _ARGS, _REF, buf, notes)
+    return rec, buf.lines, notes
+
+
 def main():
     args = parse_args()
     init_logging(args.log)
@@ -817,10 +873,43 @@ def main():
 
     notes = {'near_canonical': 0, 'ee_no_novel_region': 0}
     rows = []
-    for n, (_, row) in enumerate(info.iterrows(), 1):
-        rows.append(count_variant(row, case_bam, args, ref, support_writer, notes))
-        if n % 500 == 0:
-            logging.info('Processed %d/%d variants.', n, len(info))
+
+    n_threads = max(1, int(args.threads or 1))
+    ctx = None
+    if n_threads > 1:
+        try:
+            ctx = mp.get_context('fork')
+        except ValueError:
+            logging.warning('fork start method unavailable; running single-threaded.')
+            n_threads = 1
+
+    if n_threads > 1:
+        global _INFO, _ARGS, _REF
+        _INFO, _ARGS, _REF = info, args, ref
+        # Small chunks on purpose. The expensive variants are clustered at the
+        # end of the chromosome-sorted input, so a large chunksize would hand
+        # the whole chrM tail to one worker and serialise it again.
+        chunksize = 16
+        logging.info('Counting %d variants with %d worker processes (chunksize %d).',
+                     len(info), n_threads, chunksize)
+        with ctx.Pool(n_threads, initializer=_worker_init,
+                      initargs=(args.case_bam,)) as pool:
+            # imap preserves input order, so rows and support lines are emitted
+            # exactly as the serial path would emit them.
+            for n, (rec, lines, dnotes) in enumerate(
+                    pool.imap(_work_one, range(len(info)), chunksize), 1):
+                rows.append(rec)
+                if support_writer is not None and lines:
+                    support_writer.writelines(lines)
+                for k, v in dnotes.items():
+                    notes[k] += v
+                if n % 500 == 0:
+                    logging.info('Processed %d/%d variants.', n, len(info))
+    else:
+        for n, (_, row) in enumerate(info.iterrows(), 1):
+            rows.append(count_variant(row, case_bam, args, ref, support_writer, notes))
+            if n % 500 == 0:
+                logging.info('Processed %d/%d variants.', n, len(info))
 
     if support_writer is not None:
         support_writer.close()

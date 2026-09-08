@@ -236,6 +236,7 @@ process count_supporting_reads {
       --ins_tol ${params.supp_read_ins_tol} \\
       --split_tol ${params.supp_read_split_tol} \\
       --support_reads_out support_reads.tsv \\
+      --threads ${task.cpus} \\
       --log supporting_reads.log \\
       --out supporting_reads.tsv
     """
