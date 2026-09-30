@@ -4206,7 +4206,7 @@ conda-forge::r-arrow=19.0.1</code></pre>
                 <h2 id="v0.2.2">v0.2.2</h2>
                 <p style="color: var(--text-muted); font-size: 14px;">Released: 2026</p>
 
-                <p>A patch release fixing variant scoring, the <code>gene_filter</code> and <code>var_filter</code> options, and supporting-read counting in <code>denovo_subset</code> mode. Scores for FUS, IGR and UN variants change, so results are not directly comparable with earlier versions.</p>
+                <p>A patch release fixing variant scoring and primary-variant selection, the <code>gene_filter</code> and <code>var_filter</code> options, and supporting-read counting in <code>denovo_subset</code> mode. Scores for FUS, IGR and UN variants change, so results are not directly comparable with earlier versions.</p>
 
                 <h3 id="v0.2.2-changed">Changed</h3>
                 <ul>
@@ -4216,6 +4216,8 @@ conda-forge::r-arrow=19.0.1</code></pre>
                 <h3 id="v0.2.2-fixed">Fixed</h3>
                 <ul>
                     <li><strong>Two scoring terms were never applied.</strong> The clip check for FUS, IGR and UN, and the inter-chromosomal check for FUS and IGR, read columns that do not exist when scoring runs. Every FUS, IGR and UN therefore lost 15 points for "no clipping", and every FUS and IGR received the −20 read-through penalty and never the +40 translocation bonus. Scores are now computed from <code>contig_cigar</code> and the breakpoint chromosomes. Clipped FUS, IGR and UN variants gain 30 points, and inter-chromosomal fusions gain a further 60. The primary variant chosen for a contig can change as a result.</li>
+                    <li><strong>The read-through penalty now applies to FUS only.</strong> The +40 inter-chromosomal bonus and −20 read-through penalty were also applied to IGR, which is intra-genic and therefore always on one chromosome, so every IGR lost 20 points. IGR scores are 20 points higher than before.</li>
+                    <li><strong>The primary variant of a contig could depend on input order.</strong> The primary variant is chosen before read counts and VAF are merged. The missing values cost every candidate the same 80 points, which only cancels out if the score is not floored at zero, so weak candidates tied at 0 and the first one listed was kept. The ranked all-variants table could then flag a different primary variant. Variants are now ranked on the unfloored score in both places; the reported <code>variant_score</code> is still floored at 0.</li>
                     <li><strong><code>gene_filter</code> and <code>var_filter</code> did not accept comma-separated values as documented.</strong> A gene list such as <code>"TP53,BRCA2"</code> was treated as a file path and silently ignored, and <code>"DEL,INS"</code> matched no variant type, so every variant was removed. Both now accept comma-separated values, and <code>gene_filter</code> also accepts a file with one gene per line. A missing gene-list file, or a <code>var_filter</code> with no valid variant types, now stops the run with an error.</li>
                 </ul>
 
