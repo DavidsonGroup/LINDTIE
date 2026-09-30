@@ -154,11 +154,16 @@ process align_raw_reads_to_hg38 {
                 # Denovo Subset / Ref Guided: We use ALL mapped reads (confident + poor quality)
                 # We calculate "Mapped" as Total - Unmapped
                 n_mapped = n_total - r_unmapped
-                print "Sent to StringTie2 (All Mapped): " n_mapped " (" (n_mapped/n_total)*100 "%)" >> "read_counts_summary.log"
-                print "Discarded (Unmapped):            " r_unmapped " (" (r_unmapped/n_total)*100 "%)" >> "read_counts_summary.log"
-                
                 if (mode == "denovo_subset") {
-                  print "(Note: These are the 'Remainder' reads not selected for De Novo)" >> "read_counts_summary.log"
+                  print "Mapped (All Case Reads):         " n_mapped " (" (n_mapped/n_total)*100 "%)" >> "read_counts_summary.log"
+                } else {
+                  print "Sent to StringTie2 (All Mapped): " n_mapped " (" (n_mapped/n_total)*100 "%)" >> "read_counts_summary.log"
+                }
+                print "Discarded (Unmapped):            " r_unmapped " (" (r_unmapped/n_total)*100 "%)" >> "read_counts_summary.log"
+
+                if (mode == "denovo_subset") {
+                  print "(Note: All case reads are aligned for supporting-read counting; only the" >> "read_counts_summary.log"
+                  print " remainder reads not selected for De Novo go to StringTie2, see reads_remainder_sorted.bam)" >> "read_counts_summary.log"
                 }
             }
             if (mode == "hybrid") {
@@ -305,6 +310,44 @@ process subset_reads {
         include=f \\
         qin=33 \\
         overwrite=true
+    """
+}
+
+//------------------------------------------------------------------------------
+/*
+  Process: extract_remainder_bam
+    - denovo_subset mode only: all case reads are aligned to the genome (so that
+      supporting-read counting sees every read), and this extracts the alignments
+      of the remainder reads (those not sampled for de novo assembly) for StringTie2.
+Container:
+      - bioconda::minimap2=2.30
+      - bioconda::samtools=1.22
+*/
+process extract_remainder_bam {
+    tag "${sample_id}"
+    label 'process_medium'
+
+    publishDir "${sample_id}_output/01-Assembly/", mode: 'copy', pattern: '*.{bam,bam.bai}'
+
+    container 'oras://community.wave.seqera.io/library/minimap2_samtools:e98addfcfd60e8e7'
+
+    input:
+      tuple val(sample_id), path(all_mapped_bam), path(remainder_fastq)
+
+    output:
+      tuple val(sample_id), path("reads_remainder_sorted.bam"), emit: remainder_bam
+      tuple val(sample_id), path("reads_remainder_sorted.bam.bai"), emit: remainder_bam_bai
+
+    script:
+    """
+    # Read names of the remainder FASTQ (BBMap writes 4-line records); BAM names
+    # stop at the first whitespace, so keep only the first header field
+    awk 'NR % 4 == 1 { print substr(\$1, 2) }' ${remainder_fastq} > remainder_names.txt
+
+    # all_mapped_bam is already coordinate-sorted, so filtering keeps it sorted
+    samtools view -b -@ ${task.cpus} -N remainder_names.txt \\
+      -o reads_remainder_sorted.bam ${all_mapped_bam}
+    samtools index reads_remainder_sorted.bam
     """
 }
 

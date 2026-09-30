@@ -133,7 +133,8 @@ def parse_args():
     p.add_argument('--tol', type=int, default=35,
                    help='max breakpoint position tolerance in bp when matching a read gap/clip/'
                         'insertion to the annotated junction. For a gap it is tightened to '
-                        'min(tol, max(5, 10%% of the gap)) so a small deletion cannot absorb '
+                        'min(tol, max(10, 20%% of the gap)), with a size tolerance of '
+                        'min(25, max(3, 10%% of the gap)), so a small deletion cannot absorb '
                         'unrelated indel noise (default 35)')
     p.add_argument('--bp_tol', type=int, default=10,
                    help='breakpoint tolerance for a clip position (UN); the contig gives an '

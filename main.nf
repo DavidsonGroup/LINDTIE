@@ -81,6 +81,7 @@ include { controls_exist; effective_run_de; effective_max_fisher_p_val } from '.
 include { align_raw_reads_to_hg38 } from './modules/assembly'
 include { ref_guided_assembly } from './modules/assembly'
 include { subset_reads } from './modules/assembly'
+include { extract_remainder_bam } from './modules/assembly'
 include { de_novo_assembly } from './modules/assembly'
 include { merge_refTrans_assembly } from './modules/assembly'
 include { case_align_quant } from './modules/quantification'
@@ -240,8 +241,10 @@ workflow {
         // 2. Subset goes DIRECTLY to De Novo
         ch_reads_for_denovo = ch_split_result.subset_fastq
         
-        // 3. Remainder goes to Alignment
-        ch_reads_for_alignment = ch_split_result.remainder_fastq
+        // 3. ALL reads go to alignment, so the genome BAM used for supporting-read
+        //    counting is complete; the remainder-only BAM for StringTie2 is
+        //    extracted from it below
+        ch_reads_for_alignment = ch_decompressed_case_reads
 
     } else if (params.assembly_mode == 'hybrid' || params.assembly_mode == 'ref_guided') {
         // --- STANDARD ALIGNMENT MODES ---
@@ -270,8 +273,13 @@ workflow {
         )
 
         // Determine which BAM goes to reference-guided assembly
-        if (params.assembly_mode == 'ref_guided' || params.assembly_mode == 'denovo_subset') {
+        if (params.assembly_mode == 'ref_guided') {
             ch_aligned_bam_for_stringtie = ch_aligned.all_mapped_bam
+        } else if (params.assembly_mode == 'denovo_subset') {
+            // Only the remainder reads (not the de novo subset) go to StringTie2
+            ch_aligned_bam_for_stringtie = extract_remainder_bam(
+                ch_aligned.all_mapped_bam.join(ch_split_result.remainder_fastq, by: 0)
+            ).remainder_bam
         } else {
             // hybrid
             ch_aligned_bam_for_stringtie = ch_aligned.confident_mapped_bam

@@ -2331,14 +2331,14 @@ nextflow run "$LINDTIE_dir/main.nf" -params-file "$LINDTIE_dir/params.yaml" -pro
                                 <td><code>gene_filter</code></td>
                                 <td>Whitelist of specific gene symbols to include</td>
                                 <td><code>NULL</code></td>
-                                <td>comma-separated or <code>NULL</code> (e.g., <code>"TP53,BRCA2"</code>)</td>
+                                <td>comma-separated gene symbols, a path to a file with one gene per line, or <code>NULL</code> (e.g., <code>"TP53,BRCA2"</code>)</td>
                                 <td><span class="category-badge">Filtering</span></td>
                             </tr>
                             <tr>
                                 <td><code>var_filter</code></td>
                                 <td>Whitelist of variant types to include</td>
                                 <td><code>NULL</code></td>
-                                <td>comma-separated or <code>NULL</code> (e.g., <code>"DEL,INS"</code>)</td>
+                                <td>comma-separated variant types or <code>NULL</code> (e.g., <code>"DEL,INS"</code>)</td>
                                 <td><span class="category-badge">Filtering</span></td>
                             </tr>
                         </tbody>
@@ -2773,7 +2773,7 @@ supp_read_split_tol: 20000       # max split-read supplementary distance (FUS/IG
                         <tr>
                             <td>33</td>
                             <td>large_varsize</td>
-                            <td>Indicates whether the variant size exceeds the <em>min_clip</em> threshold (default: 30 bp).</td>
+                            <td>Indicates whether the variant size exceeds the <em>min_clip</em> threshold (default: 20 bp).</td>
                         </tr>
                         <tr>
                             <td>34</td>
@@ -2873,12 +2873,12 @@ supp_read_split_tol: 20000       # max split-read supplementary distance (FUS/IG
                         <tr>
                             <td>53</td>
                             <td>seq1</td>
-                            <td>20 bp sequence around the main variant site.</td>
+                            <td>40 bp sequence around the main variant site (20 bp on each side).</td>
                         </tr>
                         <tr>
                             <td>54</td>
                             <td>seq2</td>
-                            <td>20 bp sequence around the second variant site (if applicable).</td>
+                            <td>40 bp sequence around the second variant site (20 bp on each side; if applicable).</td>
                         </tr>
                         <tr>
                             <td>55</td>
@@ -3023,6 +3023,7 @@ supp_read_split_tol: 20000       # max split-read supplementary distance (FUS/IG
 │   ├── read_counts_summary.log (assembly_mode = hybrid or ref_guided or denovo_subset)
 │   ├── confident_mapped.bam & confident_mapped.bam.bai (assembly_mode = hybrid or ref_guided or denovo_subset)
 │   ├── reads_all_sorted.bam & reads_all_sorted.bam.bai (assembly_mode = hybrid or ref_guided or denovo_subset)
+│   ├── reads_remainder_sorted.bam & reads_remainder_sorted.bam.bai (assembly_mode = denovo_subset)
 │   ├── stringtie2_assembly.fa (assembly_mode = hybrid or ref_guided or denovo_subset)
 │   └── stringtie2_assembly.gtf (assembly_mode = hybrid or ref_guided or denovo_subset)
 ├── 02-Quantification
@@ -3061,7 +3062,8 @@ supp_read_split_tol: 20000       # max split-read supplementary distance (FUS/IG
                 <li><strong><code>rnabloom.transcripts.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by RNA-Bloom2. Only present when assembly_mode = hybrid or denovo or denovo_subset.</li>
                 <li><strong><code>read_counts_summary.log</code></strong>: A log file that contains the read counts summary. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
                 <li><strong><code>confident_mapped.bam</code></strong>: A BAM file that contains the confident mapped reads. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
-                <li><strong><code>reads_all_sorted.bam</code></strong>: A BAM file that contains all the reads mapped to the reference genome. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>reads_all_sorted.bam</code></strong>: A BAM file that contains all the case reads aligned to the reference genome, used for supporting-read counting. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
+                <li><strong><code>reads_remainder_sorted.bam</code></strong>: A BAM file that contains the alignments of the remainder reads (those not sampled for de novo assembly), used for StringTie2 assembly. Only present when assembly_mode = denovo_subset.</li>
                 <li><strong><code>stringtie2_assembly.fa</code></strong>: A FASTA file that contains the assembled transcript sequences produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
                 <li><strong><code>stringtie2_assembly.gtf</code></strong>: A GTF file that contains the assembled transcript annotations produced by StringTie2. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>
                 <li><strong><code>read_counts_summary.log</code></strong>: A log file that contains the read counts summary. Only present when assembly_mode = hybrid or ref_guided or denovo_subset.</li>

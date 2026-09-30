@@ -285,6 +285,9 @@ process post_process {
     // single sample mode and the Fisher filter is disabled (see modules/decompress.nf).
     def eff_run_de = effective_run_de()
     def eff_max_fisher_p_val = effective_max_fisher_p_val()
+    // Filters may be given as a comma-separated string or a YAML list
+    def gene_filter_arg = params.gene_filter instanceof List ? params.gene_filter.join(',') : params.gene_filter
+    def var_filter_arg = params.var_filter instanceof List ? params.var_filter.join(',') : params.var_filter
     """
     python ${params.code_base}/annotate/LINDTIE_post_process.py \
       ${sample_id} \
@@ -294,8 +297,8 @@ process post_process {
       ${vaf_estimates} \
       --minClip ${params.min_clip} \
       --minGap ${params.min_gap} \
-      ${ params.gene_filter ? "--gene_filter ${params.gene_filter}" : "" } \
-      ${ params.var_filter ? "--var_filter ${params.var_filter}" : "" } \
+      ${ gene_filter_arg ? "--gene_filter '${gene_filter_arg}'" : "" } \
+      ${ var_filter_arg ? "--var_filter '${var_filter_arg}'" : "" } \
       --cosmic_tier_data ${params.cosmic_tier_data} \
       --run_de ${eff_run_de} \
       --single_sample_min_vaf ${params.single_sample_min_vaf} \

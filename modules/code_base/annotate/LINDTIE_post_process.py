@@ -95,6 +95,37 @@ def get_num_criteria(vtype):
     }
     return criteria_counts.get(vtype, 0)
 
+CIGAR_OP_CODES = {'M': 0, 'I': 1, 'D': 2, 'N': 3, 'S': 4, 'H': 5, 'P': 6, '=': 7, 'X': 8}
+
+def parse_cigar_string(cigar_str):
+    """
+    Parse a contig_cigar string into (op, length) tuples, pysam-style.
+    Two-alignment variants (e.g. fusions) store two CIGARs joined by a comma;
+    the tuples of both are returned together.
+    """
+    if not isinstance(cigar_str, str) or not cigar_str:
+        return []
+    return [(CIGAR_OP_CODES[op], int(val))
+            for part in cigar_str.split(',')
+            for val, op in re.findall(r'(\d+)([MIDNSHP=X])', part)]
+
+def get_variant_chroms(variant_row):
+    """
+    Return (chr1, chr2) for a variant. chr1/chr2 only exist after
+    reformat_fields, so fall back to parsing pos1/pos2 ("chr:pos(strand)").
+    Returns empty strings when a chromosome cannot be determined.
+    """
+    chroms = []
+    for chr_col, pos_col in [('chr1', 'pos1'), ('chr2', 'pos2')]:
+        chrom = variant_row.get(chr_col, '')
+        if pd.isna(chrom) or chrom == '':
+            try:
+                chrom = get_pos_parts(str(variant_row.get(pos_col, '')))[0]
+            except (ValueError, IndexError):
+                chrom = ''
+        chroms.append(str(chrom))
+    return tuple(chroms)
+
 def calculate_variant_score(variant_row):
     """
     Integrated Scoring System: Structural Confidence + Functional Impact
@@ -146,34 +177,29 @@ def calculate_variant_score(variant_row):
 
     elif vtype in ['FUS', 'IGR']:
         # Fusion Logic
-        cigar_tuples = variant_row.get('cigar', [])
-        has_clipping = False
-        if isinstance(cigar_tuples, list):
-            # Check constants for hard/soft clip codes
-            has_clipping = any([op in [constants.CIGAR.get('hard-clip', 5), 
-                                       constants.CIGAR.get('soft-clip', 4)] 
-                                and val >= MIN_CLIP for op, val in cigar_tuples])
-        
+        cigar_tuples = parse_cigar_string(variant_row.get('contig_cigar', ''))
+        # Check constants for hard/soft clip codes
+        has_clipping = any([op in [constants.CIGAR.get('hard-clip', 5),
+                                   constants.CIGAR.get('soft-clip', 4)]
+                            and val >= MIN_CLIP for op, val in cigar_tuples])
+
         overlaps_gene = bool(variant_row.get('overlaps_gene', False))
-        
+
         score += 15 if size > MIN_CLIP else -15
         score += 15 if has_clipping else -15
         score += 15 if overlaps_gene else -15
 
         # Fusion Refinement (Penalty for Read-Throughs)
-        chr1 = str(variant_row.get('chr1', ''))
-        chr2 = str(variant_row.get('chr2', ''))
+        chr1, chr2 = get_variant_chroms(variant_row)
         if chr1 != chr2 and chr1 and chr2:
             score += 40  # Bonus: True Translocation
-        elif chr1 == chr2:
+        elif chr1 and chr1 == chr2:
             score -= 20  # Penalty: Likely Read-Through (False Positive)
 
     elif vtype == 'UN':
-        cigar_tuples = variant_row.get('cigar', [])
-        has_soft_clip = False
-        if isinstance(cigar_tuples, list):
-             has_soft_clip = any([op == constants.CIGAR.get('soft-clip', 4) 
-                                  and val >= MIN_CLIP for op, val in cigar_tuples])
+        cigar_tuples = parse_cigar_string(variant_row.get('contig_cigar', ''))
+        has_soft_clip = any([op == constants.CIGAR.get('soft-clip', 4)
+                             and val >= MIN_CLIP for op, val in cigar_tuples])
 
         score += 15 if size > MIN_CLIP else -15
         score += 15 if has_soft_clip else -15
@@ -435,26 +461,23 @@ def get_detailed_scoring_breakdown(variant_row):
         return s
 
     if vtype in ['INS', 'DEL']:
-        struct_score += 15 if size > constants.DEFAULT_MIN_GAP else -15 # Approx constants if global not available
+        struct_score += 15 if size > MIN_GAP else -15
         struct_score += check_splicing_score(variant_row, True, True)
-        
+
     elif vtype in ['FUS', 'IGR']:
-        cigar = variant_row.get('cigar', [])
-        has_clipping = False
-        if isinstance(cigar, list):
-             has_clipping = any([op in [4, 5] and val >= constants.DEFAULT_MIN_CLIP for op, val in cigar])
-        
-        struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15
+        cigar = parse_cigar_string(variant_row.get('contig_cigar', ''))
+        has_clipping = any([op in [4, 5] and val >= MIN_CLIP for op, val in cigar])
+
+        struct_score += 15 if size > MIN_CLIP else -15
         struct_score += 15 if has_clipping else -15
         struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
-        
+
         # Translocation Bonus/Penalty
-        chr1 = str(variant_row.get('chr1', ''))
-        chr2 = str(variant_row.get('chr2', ''))
+        chr1, chr2 = get_variant_chroms(variant_row)
         if chr1 != chr2 and chr1 and chr2:
             breakdown['translocation_bonus'] = 40
             struct_score += 40
-        elif chr1 == chr2:
+        elif chr1 and chr1 == chr2:
             breakdown['read_through_penalty'] = -20
             struct_score -= 20
 
@@ -469,12 +492,15 @@ def get_detailed_scoring_breakdown(variant_row):
         if valid_motif is True: struct_score += 15
         elif valid_motif is False: struct_score -= 30
         
-        struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15 # Simplified check
+        threshold = MIN_GAP if vtype in ['NEJ', 'PNJ'] else MIN_CLIP
+        struct_score += 15 if size > threshold else -15
 
     elif vtype == 'UN':
-         struct_score += 15 if size > constants.DEFAULT_MIN_CLIP else -15
-         struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
-         # Soft clip check skipped for brevity in breakdown, assumming +/- 15 balance
+        cigar = parse_cigar_string(variant_row.get('contig_cigar', ''))
+        has_soft_clip = any([op == 4 and val >= MIN_CLIP for op, val in cigar])
+        struct_score += 15 if size > MIN_CLIP else -15
+        struct_score += 15 if has_soft_clip else -15
+        struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
 
     breakdown['structural_score'] = struct_score
 
@@ -599,18 +625,21 @@ def parse_args(args):
                         metavar='GENE_FILTER',
                         type=str,
                         default='',
-                        help='''File containing list of genes (one per line) to keep (filter out others).''')
+                        help='''Genes to keep (filter out others): either a file with one gene
+                                per line, or a comma-separated list (e.g. TP53,BRCA2).''')
     parser.add_argument('--var_filter',
                         metavar='VAR_FILTER',
                         type=str,
                         nargs='+',
-                        help='''Types of variant to keep.''')
+                        help='''Variant types to keep, space- or comma-separated (e.g. DEL,INS).''')
     parser.add_argument('--minClip',
                         type=int,
-                        help='''Minimum length for a hard/soft clip (default: %(default)s).''')
+                        help=f'''Minimum length for a hard/soft clip (default: {constants.DEFAULT_MIN_CLIP};
+                                 the pipeline passes params.min_clip, default 20).''')
     parser.add_argument('--minGap',
                         type=int,
-                        help='''Minimum gap size for size-dependent scoring (default: %(default)s).''')
+                        help=f'''Minimum gap size for size-dependent scoring
+                                 (default: {constants.DEFAULT_MIN_GAP}).''')
     parser.add_argument('--all_variants_out',
                         metavar='ALL_VARIANTS_TSV',
                         type=str,
@@ -653,6 +682,41 @@ def filter_by_gene(contigs, gene_filter):
     overlapping_genes = overlapping_genes.apply([lambda og: len(np.intersect1d(np.array(og), genelist)) > 0])
     contigs = contigs[overlapping_genes.values]
     return contigs
+
+VALID_VARIANT_TYPES = ['FUS', 'IGR', 'INS', 'DEL', 'EE', 'NE', 'RI', 'AS', 'NEJ', 'PNJ', 'UN']
+
+def parse_var_filter(tokens):
+    """
+    Flatten --var_filter tokens, accepting space- and/or comma-separated
+    variant types (e.g. "DEL,INS", "DEL INS" or "DEL, INS"). Unknown types
+    are dropped with a warning; exits if no valid type remains.
+    """
+    var_types = [v.strip().upper() for token in tokens for v in token.split(',') if v.strip()]
+    unknown = [v for v in var_types if v not in VALID_VARIANT_TYPES]
+    if unknown:
+        logging.warning(f"Ignoring unknown variant types in --var_filter: {unknown}. "
+                        f"Valid types: {VALID_VARIANT_TYPES}")
+    var_types = [v for v in var_types if v in VALID_VARIANT_TYPES]
+    if not var_types:
+        exit_with_error(f"--var_filter {tokens} contains no valid variant types "
+                        f"(valid: {', '.join(VALID_VARIANT_TYPES)})", EXIT_FILE_IO_ERROR)
+    return var_types
+
+def load_gene_filter(gene_filter_arg):
+    """
+    Load --gene_filter as either a file with one gene per line, or a
+    comma-separated list of gene symbols (e.g. "TP53,BRCA2"). Returns a
+    one-column DataFrame (as used by filter_by_gene), or [] if not set.
+    Exits if the value looks like a file path but the file does not exist.
+    """
+    if not gene_filter_arg:
+        return []
+    if os.path.isfile(gene_filter_arg):
+        return pd.read_csv(gene_filter_arg, header=None)
+    if '/' in gene_filter_arg or gene_filter_arg.lower().endswith(('.txt', '.tsv', '.csv')):
+        exit_with_error(f"--gene_filter file not found: {gene_filter_arg}", EXIT_FILE_IO_ERROR)
+    genes = [g.strip() for g in gene_filter_arg.split(',') if g.strip()]
+    return pd.DataFrame({0: genes}) if genes else []
 
 def add_de_info(contigs, de_results):
     de_results = de_results.rename(columns={'transcript_id': 'contig_id'})
@@ -1248,12 +1312,11 @@ def main():
         logging.info(f"Processed VAF data: {len(vafs)} unique records.")
 
         # Load gene filter if provided
-        gene_filter = []
-        if args.gene_filter and os.path.exists(args.gene_filter):
-            gene_filter = pd.read_csv(args.gene_filter, header=None)
+        gene_filter = load_gene_filter(args.gene_filter)
+        if len(gene_filter) > 0:
             logging.info(f"Loaded gene filter with {len(gene_filter)} genes.")
         else:
-            logging.info("No gene filter provided or file not found.")
+            logging.info("No gene filter provided.")
 
     except Exception as e:
         logging.error(f"Error loading input files: {str(e)}")
@@ -1289,8 +1352,9 @@ def main():
 
     # STEP 3: Apply variant type filtering if specified
     if args.var_filter:
-        contigs = contigs[contigs.variant_type.apply(lambda v: v in args.var_filter).values]
-        logging.info(f"Filtered contigs by variant type: {args.var_filter}. Remaining: {len(contigs)}")
+        var_filter = parse_var_filter(args.var_filter)
+        contigs = contigs[contigs.variant_type.apply(lambda v: v in var_filter).values]
+        logging.info(f"Filtered contigs by variant type: {var_filter}. Remaining: {len(contigs)}")
 
     # STEP 4: Apply gene filtering if specified
     if len(gene_filter) > 0:
