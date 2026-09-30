@@ -126,9 +126,13 @@ def get_variant_chroms(variant_row):
         chroms.append(str(chrom))
     return tuple(chroms)
 
-def calculate_variant_score(variant_row):
+def calculate_variant_score(variant_row, floor=True):
     """
     Integrated Scoring System: Structural Confidence + Functional Impact
+
+    The reported score is floored at zero. Ranking within a contig uses
+    floor=False: flooring ties weak variants at 0, so the choice between
+    them would fall to input order rather than their actual scores.
     """
     vtype = variant_row.get('variant_type', '')
     
@@ -189,12 +193,14 @@ def calculate_variant_score(variant_row):
         score += 15 if has_clipping else -15
         score += 15 if overlaps_gene else -15
 
-        # Fusion Refinement (Penalty for Read-Throughs)
-        chr1, chr2 = get_variant_chroms(variant_row)
-        if chr1 != chr2 and chr1 and chr2:
-            score += 40  # Bonus: True Translocation
-        elif chr1 and chr1 == chr2:
-            score -= 20  # Penalty: Likely Read-Through (False Positive)
+        # Fusion Refinement (Penalty for Read-Throughs). FUS only: an IGR is
+        # intra-genic, hence always same-chromosome, so this would only penalise it
+        if vtype == 'FUS':
+            chr1, chr2 = get_variant_chroms(variant_row)
+            if chr1 != chr2 and chr1 and chr2:
+                score += 40  # Bonus: True Translocation
+            elif chr1 and chr1 == chr2:
+                score -= 20  # Penalty: Likely Read-Through (False Positive)
 
     elif vtype == 'UN':
         cigar_tuples = parse_cigar_string(variant_row.get('contig_cigar', ''))
@@ -271,8 +277,8 @@ def calculate_variant_score(variant_row):
         score += 15
     elif contig_varsize >= 20:
         score += 10
-    
-    return max(0, score)
+
+    return max(0, score) if floor else score
 
 # Holds the variant_ids the per-contig collapse hides, so their supporting_read_count can be
 # recovered once the counts are merged on. Dropped before the final column selection.
@@ -304,7 +310,9 @@ def select_best_variant_per_contig(contigs_df):
             group_with_scores = []
             
             for idx, row in group.iterrows():
-                score = calculate_variant_score(row)
+                # Unfloored: this runs before num_reads_case/VAF are merged, and the flat
+                # -80 their absence costs only cancels out within a contig without the floor
+                score = calculate_variant_score(row, floor=False)
                 variant_of_interest = bool(row.get('variant_of_interest', False))
                 group_with_scores.append((score, row, variant_of_interest))
                 
@@ -355,11 +363,12 @@ def rank_variants_per_contig(contigs_df):
             - is_primary (bool)
     """
     ranked = contigs_df.copy()
-    # Calculate scores for every row
+    # Report the floored score, but rank on the unfloored one, as selection does
     ranked['variant_score'] = ranked.apply(calculate_variant_score, axis=1)
+    raw_score = ranked.apply(calculate_variant_score, axis=1, floor=False)
     # Rank within each contig_id (1 = best)
     ranked['rank_within_contig'] = (
-        ranked.groupby('contig_id')['variant_score']
+        raw_score.groupby(ranked['contig_id'])
         .rank(method='first', ascending=False)
         .astype(int)
     )
@@ -472,14 +481,15 @@ def get_detailed_scoring_breakdown(variant_row):
         struct_score += 15 if has_clipping else -15
         struct_score += 15 if bool(variant_row.get('overlaps_gene', False)) else -15
 
-        # Translocation Bonus/Penalty
-        chr1, chr2 = get_variant_chroms(variant_row)
-        if chr1 != chr2 and chr1 and chr2:
-            breakdown['translocation_bonus'] = 40
-            struct_score += 40
-        elif chr1 and chr1 == chr2:
-            breakdown['read_through_penalty'] = -20
-            struct_score -= 20
+        # Translocation Bonus/Penalty (FUS only, as in calculate_variant_score)
+        if vtype == 'FUS':
+            chr1, chr2 = get_variant_chroms(variant_row)
+            if chr1 != chr2 and chr1 and chr2:
+                breakdown['translocation_bonus'] = 40
+                struct_score += 40
+            elif chr1 and chr1 == chr2:
+                breakdown['read_through_penalty'] = -20
+                struct_score -= 20
 
     elif vtype in ['EE', 'NE', 'AS', 'NEJ', 'PNJ', 'RI']:
         expect_overlap = False if vtype in ['NE', 'RI'] else True
@@ -1390,7 +1400,8 @@ def main():
     #
     # select_best_variant_per_contig still scores pre-merge, because it has to pick a surviving
     # variant before the per-contig collapse. That is harmless: both columns are per-contig, so
-    # the -80 lands equally on every candidate and cancels out of a within-contig ranking.
+    # the -80 lands equally on every candidate and cancels out of a within-contig ranking --
+    # provided the ranking uses the unfloored score (floor=False), which it does.
     contigs['variant_score'] = contigs.apply(calculate_variant_score, axis=1)
     validate_scoring_system(contigs)
 
