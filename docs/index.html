@@ -1500,7 +1500,7 @@
             </button>
             <a href="#changelog" class="header-link" onclick="event.preventDefault(); showSection('changelog'); history.pushState(null, null, '#changelog');">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
-                <span>v0.2.1</span>
+                <span>v0.2.2</span>
             </a>
             <!-- Dark/Light Mode Toggle -->
             <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark mode">
@@ -4201,6 +4201,29 @@ conda-forge::r-arrow=19.0.1</code></pre>
                 <h1>Changelog</h1>
 
                 <p>This page documents all notable changes to LINDTIE. The format is based on <a href="https://keepachangelog.com/" target="_blank">Keep a Changelog</a>, and this project adheres to <a href="https://semver.org/" target="_blank">Semantic Versioning</a>.</p>
+
+                <!-- Version 0.2.2 -->
+                <h2 id="v0.2.2">v0.2.2</h2>
+                <p style="color: var(--text-muted); font-size: 14px;">Released: 2026</p>
+
+                <p>A patch release fixing variant scoring, the <code>gene_filter</code> and <code>var_filter</code> options, and supporting-read counting in <code>denovo_subset</code> mode. Scores for FUS, IGR and UN variants change, so results are not directly comparable with earlier versions.</p>
+
+                <h3 id="v0.2.2-changed">Changed</h3>
+                <ul>
+                    <li><strong>In <code>denovo_subset</code> mode, all case reads are now aligned to the genome.</strong> Previously only the remainder reads (those not sampled for de novo assembly) were aligned, so <code>supporting_read_count</code> missed the reads in the de novo subset. StringTie2 still assembles only the remainder reads, whose alignments are extracted by a new <code>extract_remainder_bam</code> step and published as <code>reads_remainder_sorted.bam</code>. On the test case (15,539 reads, 5,000 subsampled), the total number of supporting reads rose from 2,130 to 3,048.</li>
+                </ul>
+
+                <h3 id="v0.2.2-fixed">Fixed</h3>
+                <ul>
+                    <li><strong>Two scoring terms were never applied.</strong> The clip check for FUS, IGR and UN, and the inter-chromosomal check for FUS and IGR, read columns that do not exist when scoring runs. Every FUS, IGR and UN therefore lost 15 points for "no clipping", and every FUS and IGR received the −20 read-through penalty and never the +40 translocation bonus. Scores are now computed from <code>contig_cigar</code> and the breakpoint chromosomes. Clipped FUS, IGR and UN variants gain 30 points, and inter-chromosomal fusions gain a further 60. The primary variant chosen for a contig can change as a result.</li>
+                    <li><strong><code>gene_filter</code> and <code>var_filter</code> did not accept comma-separated values as documented.</strong> A gene list such as <code>"TP53,BRCA2"</code> was treated as a file path and silently ignored, and <code>"DEL,INS"</code> matched no variant type, so every variant was removed. Both now accept comma-separated values, and <code>gene_filter</code> also accepts a file with one gene per line. A missing gene-list file, or a <code>var_filter</code> with no valid variant types, now stops the run with an error.</li>
+                </ul>
+
+                <h3 id="v0.2.2-docs">Documentation</h3>
+                <ul>
+                    <li>The <code>--tol</code> help text of the supporting-read script now gives the gap tolerances the code uses: position min(tol, max(10, 20% of the gap)) and size min(25, max(3, 10% of the gap)).</li>
+                    <li>The <code>seq1</code>/<code>seq2</code> output columns are described as 40 bp (20 bp either side of the variant site), and the <code>large_varsize</code> default as 20 bp, matching the code.</li>
+                </ul>
 
                 <!-- Version 0.2.1 -->
                 <h2 id="v0.2.1">v0.2.1</h2>
