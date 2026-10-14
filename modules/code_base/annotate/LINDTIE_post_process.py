@@ -1455,7 +1455,10 @@ def main():
             return '1' in val_str or '2' in val_str
 
         if cosmic_filter_on:
-            has_cosmic = contigs['COSMIC_tier'].apply(is_tier_valid)
+            # Keep tier 1/2 genes and known COSMIC fusion partners. A fusion partner
+            # is not necessarily tiered, so a tier-only check would drop it.
+            has_cosmic = (contigs['COSMIC_tier'].apply(is_tier_valid)
+                          | (contigs['COSMIC_fusion'].astype(str).str.upper() == 'YES'))
         else:
             # Keep an element-wise mask so the '&' below works on any frame size.
             has_cosmic = pd.Series(True, index=contigs.index)
@@ -1472,7 +1475,7 @@ def main():
                 logging.warning(
                     "No variants passed the Single Sample filters. Check if the COSMIC file "
                     "matched any genes, or set --single_sample_cosmic_filter false to keep "
-                    "variants outside COSMIC tier 1/2."
+                    "variants outside COSMIC tier 1/2 and COSMIC fusion genes."
                 )
             else:
                 logging.warning(

@@ -2315,7 +2315,7 @@ nextflow run "$LINDTIE_dir/main.nf" -params-file "$LINDTIE_dir/params.yaml" -pro
                             </tr>
                             <tr>
                                 <td><code>single_sample_cosmic_filter</code></td>
-                                <td>Require a COSMIC tier 1/2 gene to retain a variant when <code>RUN_DE</code> is <code>false</code>. Set to <code>false</code> to keep variants outside the Cancer Gene Census</td>
+                                <td>Require a COSMIC tier 1/2 gene or a COSMIC fusion gene (<code>COSMIC_fusion</code> = Yes) to retain a variant when <code>RUN_DE</code> is <code>false</code>. Set to <code>false</code> to keep variants outside the Cancer Gene Census</td>
                                 <td><code>true</code></td>
                                 <td><code>true</code> or <code>false</code></td>
                                 <td><span class="category-badge">Filtering</span></td>
@@ -4211,6 +4211,7 @@ conda-forge::r-arrow=19.0.1</code></pre>
                 <h3 id="v0.2.2-changed">Changed</h3>
                 <ul>
                     <li><strong>In <code>denovo_subset</code> mode, all case reads are now aligned to the genome.</strong> Previously only the remainder reads (those not sampled for de novo assembly) were aligned, so <code>supporting_read_count</code> missed the reads in the de novo subset. StringTie2 still assembles only the remainder reads, whose alignments are extracted by a new <code>extract_remainder_bam</code> step and published as <code>reads_remainder_sorted.bam</code>. On the test case (15,539 reads, 5,000 subsampled), the total number of supporting reads rose from 2,130 to 3,048.</li>
+                    <li><strong><code>single_sample_cosmic_filter</code> now also keeps known COSMIC fusion genes.</strong> Previously a variant was kept only if an overlapping gene was COSMIC tier 1/2, so variants whose genes are listed as COSMIC fusion partners but are untiered (<code>COSMIC_fusion</code> = Yes, empty <code>COSMIC_tier</code>) were dropped. A variant is now kept if it has a tier 1/2 gene or a COSMIC fusion gene.</li>
                 </ul>
 
                 <h3 id="v0.2.2-fixed">Fixed</h3>

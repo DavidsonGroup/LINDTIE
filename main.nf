@@ -48,7 +48,7 @@ Optional parameters:
 --gene_filter               : List of genes to filter (default: NULL)
 --var_filter                : List of variant types to filter (default: NULL)
 --single_sample_min_vaf     : Minimum VAF_sum_WT_TPM to keep a variant when RUN_DE is false (default: 0.1)
---single_sample_cosmic_filter: Require COSMIC tier 1/2 to keep a variant when RUN_DE is false (default: true)
+--single_sample_cosmic_filter: Require a COSMIC tier 1/2 or fusion gene to keep a variant when RUN_DE is false (default: true)
 --max_fisher_p_val          : Maximum Fisher exact test p-value to keep; variants with larger p are dropped (default: 0.05)
 --help                      : Show this help message
 --version                   : Show the version of LINDTIE
